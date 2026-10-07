@@ -28,7 +28,7 @@ services:
   backend:
     build: ../backend
     environment:
-      DATABASE_URL: postgresql+psycopg://admitgraph:admitgraph_dev_password@postgres:5432/admitgraph
+      DATABASE_URL: postgresql+asyncpg://admitgraph:admitgraph_dev_password@postgres:5432/admitgraph
       REDIS_URL: redis://redis:6379/0
       CORS_ORIGINS: http://localhost:3000
       APP_ENV: development

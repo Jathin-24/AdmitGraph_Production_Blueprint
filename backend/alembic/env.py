@@ -7,6 +7,12 @@ from app.core.config import get_settings
 from app.db.base import Base
 from app.db import models  # noqa: F401  (register models on metadata)
 
+
+def _sync_url() -> str:
+    url = get_settings().database_url
+    return url.replace("+asyncpg", "+psycopg")
+
+
 config = context.config
 
 if config.config_file_name is not None:
@@ -17,7 +23,7 @@ target_metadata = Base.metadata
 
 def run_migrations_offline() -> None:
     context.configure(
-        url=get_settings().database_url,
+        url=_sync_url(),
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -33,7 +39,7 @@ def do_run_migrations(connection) -> None:
 
 
 def run_migrations_online() -> None:
-    connectable = create_engine(get_settings().database_url, poolclass=pool.NullPool)
+    connectable = create_engine(_sync_url(), poolclass=pool.NullPool)
     with connectable.connect() as connection:
         do_run_migrations(connection)
     connectable.dispose()

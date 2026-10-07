@@ -1,12 +1,17 @@
+import asyncio
+import sys
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1 import health
+from app.api.v1 import health, onboarding, profile
 from app.core.config import get_settings
 from app.core.errors import (
     AppError,
@@ -53,3 +58,5 @@ async def request_id_middleware(
 
 
 app.include_router(health.router, prefix="/api/v1")
+app.include_router(profile.router, prefix="/api/v1")
+app.include_router(onboarding.router, prefix="/api/v1")
