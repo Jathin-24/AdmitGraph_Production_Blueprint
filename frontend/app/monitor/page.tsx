@@ -178,6 +178,7 @@ export default function MonitorPage() {
                   <span className="text-ink-faint">
                     {" "}
                     · {s.frequency.toLowerCase()} · {s.enabled ? "enabled" : "paused"}
+                    {s.program_name ? ` · ${s.program_name}` : " · all programs"}
                   </span>
                 </div>
                 <div className="flex gap-2">

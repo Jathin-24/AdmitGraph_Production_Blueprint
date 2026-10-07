@@ -91,6 +91,9 @@ async def step_score_fit(
             DimensionInput("evidence_confidence", [RequirementStatus.UNKNOWN]),
         ]
         score, subscores = overall_score(dims)
+        breakdown = ", ".join(
+            f"{k.replace('_', ' ').capitalize()} {v}" for k, v in subscores.items()
+        )
         session.add(
             FitAssessment(
                 research_plan_id=research_plan_id,
@@ -98,7 +101,10 @@ async def step_score_fit(
                 program_id=program.id,
                 overall_score=score,
                 scoring_version=SCORING_VERSION,
-                explanation=f"subscores={ {k: str(v) for k, v in subscores.items()} }",
+                explanation=(
+                    f"Weighted from your profile — {breakdown}. "
+                    "This is a fit score, not an admission probability."
+                ),
             )
         )
         created += 1

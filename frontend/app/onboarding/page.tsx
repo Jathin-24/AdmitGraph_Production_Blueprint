@@ -1,8 +1,21 @@
 "use client";
 
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { LoadingNote } from "../components/ui";
+
+const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1";
+
+/** Onboarding keys that mirror profile fields — prefilled from GET /me/profile. */
+const PREFILL_KEYS = [
+  "field_of_study",
+  "career_goal",
+  "current_degree",
+  "institution_name",
+  "cgpa",
+  "graduation_year",
+  "total_budget_amount",
+];
 
 interface Field {
   key: string;
@@ -23,7 +36,10 @@ export default function OnboardingPage() {
   const [index, setIndex] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const router = useRouter();
 
   useEffect(
     () => () => {
@@ -33,10 +49,31 @@ export default function OnboardingPage() {
   );
 
   useEffect(() => {
-    fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1"}/onboarding/schema`)
+    // Guided setup schema.
+    fetch(`${API}/onboarding/schema`)
       .then((r) => r.json())
       .then((d) => setSteps(d.steps))
       .catch(() => setSteps([]));
+
+    // Prefill from the saved profile so returning users never retype
+    // answers they already gave.
+    fetch(`${API}/me/profile`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((p: Record<string, unknown> | null) => {
+        if (!p) return;
+        setAnswers((prev) => {
+          const next = { ...prev };
+          for (const key of PREFILL_KEYS) {
+            const v = p[key];
+            const empty = v === null || v === undefined || v === "";
+            if (!empty && !next[key]) next[key] = String(v);
+          }
+          return next;
+        });
+      })
+      .catch(() => {
+        /* prefill is best-effort */
+      });
   }, []);
 
   if (steps.length === 0) {
@@ -50,15 +87,31 @@ export default function OnboardingPage() {
   const step = steps[index];
   const progress = Math.round(((index + 1) / steps.length) * 100);
 
-  async function save() {
-    await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1"}/onboarding/answers`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ answers }),
-    });
-    setSaved(true);
-    if (savedTimer.current) clearTimeout(savedTimer.current);
-    savedTimer.current = setTimeout(() => setSaved(false), 2000);
+  async function save(): Promise<boolean> {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const res = await fetch(`${API}/onboarding/answers`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ answers }),
+      });
+      if (!res.ok) throw new Error(`save failed (${res.status})`);
+      setSaved(true);
+      if (savedTimer.current) clearTimeout(savedTimer.current);
+      savedTimer.current = setTimeout(() => setSaved(false), 2000);
+      return true;
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "Could not save your answers");
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // Final step: always persist answers before leaving the flow.
+  async function finish() {
+    if (await save()) router.push("/research");
   }
 
   return (
@@ -106,8 +159,8 @@ export default function OnboardingPage() {
       </div>
 
       <div className="flex flex-wrap items-center gap-3 border-t border-line pt-5">
-        <button className="btn-secondary" onClick={save}>
-          Save
+        <button className="btn-secondary" onClick={save} disabled={saving}>
+          {saving ? "Saving…" : "Save"}
         </button>
         {index > 0 && (
           <button className="btn-ghost" onClick={() => setIndex(index - 1)}>
@@ -119,14 +172,19 @@ export default function OnboardingPage() {
             Next →
           </button>
         ) : (
-          <Link href="/research" className="btn-primary ml-auto">
-            Done — build my strategy →
-          </Link>
+          <button className="btn-primary ml-auto" onClick={finish} disabled={saving}>
+            {saving ? "Saving…" : "Done — build my strategy →"}
+          </button>
         )}
       </div>
       {saved && (
         <p role="status" className="text-sm text-forest">
           Saved.
+        </p>
+      )}
+      {saveError && (
+        <p role="alert" className="text-sm text-danger">
+          Could not save: {saveError} — your answers are still here, try again.
         </p>
       )}
     </main>

@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ErrorNote, PageHeader, fmtDate } from "../components/ui";
 import { getRun, getRunEvents, startResearchRun } from "../lib/api";
 
@@ -32,6 +32,12 @@ export default function ResearchPage() {
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
 
+  // Restore an in-flight run after mount (client-only, so SSR markup matches).
+  useEffect(() => {
+    const stored = sessionStorage.getItem("research_run_id");
+    if (stored) setRunId(stored);
+  }, []);
+
   const events = useQuery({
     queryKey: ["events", runId],
     queryFn: () => getRunEvents(runId!),
@@ -59,6 +65,7 @@ export default function ResearchPage() {
     try {
       const out = await startResearchRun();
       setRunId(out.research_plan_id);
+      sessionStorage.setItem("research_run_id", out.research_plan_id);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not start research");
     } finally {

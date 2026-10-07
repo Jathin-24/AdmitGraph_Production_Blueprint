@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import MonitorSnapshot, MonitorSubscription
+from app.db.models import MonitorSnapshot, MonitorSubscription, Program
 from app.db.session import get_session
 from app.services.monitoring.service import MonitoringService
 from app.services.profile import get_or_create_profile
@@ -31,11 +31,23 @@ async def create_subscription(
 
 @router.get("/monitor/subscriptions")
 async def list_subscriptions(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
-    result = await session.execute(select(MonitorSubscription))
+    rows = (
+        await session.execute(
+            select(MonitorSubscription, Program)
+            .outerjoin(Program, MonitorSubscription.program_id == Program.id)
+        )
+    ).all()
     return {
         "items": [
-            {"id": str(s.id), "field_key": s.field_key, "frequency": s.frequency, "enabled": s.enabled}
-            for s in result.scalars().all()
+            {
+                "id": str(s.id),
+                "field_key": s.field_key,
+                "frequency": s.frequency,
+                "enabled": s.enabled,
+                "program_id": str(s.program_id) if s.program_id else None,
+                "program_name": p.canonical_name if p else None,
+            }
+            for s, p in rows
         ]
     }
 

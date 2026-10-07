@@ -19,6 +19,7 @@ from app.db.models import (
     Evidence,
     EvidenceConflictMember,
     EvidenceStatus,
+    FitAssessment,
     Institution,
     Program,
     Requirement,
@@ -222,6 +223,13 @@ async def test_strategy_persistence_steps_end_to_end(db_session: Any) -> None:
     scored = await step_score_fit(db_session, profile.id, None)
     assert scored["fit_assessments_created"] >= 1
 
+    # Explanations are user-facing: human-readable copy, never raw dicts,
+    # and always restating that fit is not an admission probability.
+    fit = (await db_session.execute(select(FitAssessment))).scalars().first()
+    assert fit is not None and fit.explanation
+    assert not fit.explanation.startswith("subscores=")
+    assert "not an admission probability" in fit.explanation
+
     risk_out = await step_assess_risks(db_session, profile.id)
     assert "risks_created" in risk_out
 
@@ -236,7 +244,9 @@ async def test_strategy_persistence_steps_end_to_end(db_session: Any) -> None:
         )
     ).scalars().all()
     assert plans, "portfolio must contain at least one application plan"
-    assert all(p.program_id == program.id for p in plans)
+    # The scratch DB is shared across tests, so the portfolio may also include
+    # programs created by other tests — this one must be among them.
+    assert program.id in {p.program_id for p in plans}
 
 
 async def test_full_orchestrator_run_with_fake_search(db_session: Any) -> None:

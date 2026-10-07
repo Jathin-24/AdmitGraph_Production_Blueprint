@@ -183,6 +183,8 @@ export interface Subscription {
   field_key: string;
   frequency: string;
   enabled: boolean;
+  program_id?: string | null;
+  program_name?: string | null;
 }
 
 export interface MonitorCheck {

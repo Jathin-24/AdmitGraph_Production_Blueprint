@@ -47,7 +47,10 @@ export function Nav() {
 
         <div className="flex flex-1 items-center gap-1">
           {ITEMS.map((item) => {
-            const active = pathname.startsWith(item.href);
+            const active =
+              item.href === "/explore"
+                ? pathname.startsWith("/explore") || pathname.startsWith("/programs")
+                : pathname.startsWith(item.href);
             return (
               <Link
                 key={item.href}

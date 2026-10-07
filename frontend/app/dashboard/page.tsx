@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ConfidencePill,
   EmptyState,
@@ -112,7 +112,13 @@ export default function DashboardPage() {
     onError: (err) => setSimResult(err instanceof Error ? err.message : "Simulation failed"),
   });
 
-  const items = strategies.data?.items ?? [];
+  const items = useMemo(() => strategies.data?.items ?? [], [strategies.data]);
+
+  // Auto-select the newest strategy so the dashboard is never a blank slate.
+  useEffect(() => {
+    if (!selected && items.length > 0) setSelected(items[0].id);
+  }, [items, selected]);
+
   const active = items.find((s) => s.id === selected);
 
   return (
