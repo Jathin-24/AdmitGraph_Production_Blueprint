@@ -36,6 +36,16 @@ def _normalized(text: str) -> str:
     return text.strip().lower().replace(" ", "_")
 
 
+def _threshold_status(got: Decimal, want: Decimal, label: str) -> tuple[RequirementStatus, str]:
+    g = got.quantize(Decimal("0.01"))
+    w = want.quantize(Decimal("0.01"))
+    if got >= want:
+        return RequirementStatus.SATISFIED, f"{label} {g} >= {w}"
+    if want - got <= want * Decimal("0.05"):
+        return RequirementStatus.PARTIAL, f"{label} {g} slightly below {w}"
+    return RequirementStatus.NOT_SATISFIED, f"{label} {g} < {w}"
+
+
 def evaluate(requirement: dict[str, Any], profile: ProfileFacts) -> tuple[RequirementStatus, str]:
     """Returns (status, reason). Deterministic; UNKNOWN when required facts are missing."""
     key = _normalized(str(requirement.get("normalized_key", "")))
@@ -46,12 +56,27 @@ def evaluate(requirement: dict[str, Any], profile: ProfileFacts) -> tuple[Requir
         required = _num(value.get("min"))
         if profile.cgpa is None or required is None:
             return RequirementStatus.UNKNOWN, "CGPA or required threshold missing"
-        if profile.cgpa >= required:
-            return RequirementStatus.SATISFIED, f"CGPA {profile.cgpa} >= {required}"
-        gap = required - profile.cgpa
-        if profile.cgpa_scale and gap <= (profile.cgpa_scale or Decimal(10)) * Decimal("0.05"):
-            return RequirementStatus.PARTIAL, f"CGPA {profile.cgpa} slightly below {required}"
-        return RequirementStatus.NOT_SATISFIED, f"CGPA {profile.cgpa} < {required}"
+        # Compare on the same scale: a 3.0/4.0 requirement is not "3.0" on a 10-point scale.
+        required_scale = _num(value.get("scale")) or profile.cgpa_scale
+        got = profile.cgpa
+        want = required
+        if (
+            required_scale
+            and profile.cgpa_scale
+            and required_scale != profile.cgpa_scale
+            and required_scale > 0
+            and profile.cgpa_scale > 0
+        ):
+            got = (profile.cgpa / profile.cgpa_scale) * Decimal(100)
+            want = (required / required_scale) * Decimal(100)
+            label = "normalized CGPA%"
+            return _threshold_status(got, want, label)
+        if got >= want:
+            return RequirementStatus.SATISFIED, f"CGPA {got} >= {want} (same scale)"
+        gap = want - got
+        if profile.cgpa_scale and gap <= profile.cgpa_scale * Decimal("0.05"):
+            return RequirementStatus.PARTIAL, f"CGPA {got} slightly below {want}"
+        return RequirementStatus.NOT_SATISFIED, f"CGPA {got} < {want}"
 
     if key in ("language_ielts_overall", "ielts_overall_min"):
         required = _num(value.get("min"))

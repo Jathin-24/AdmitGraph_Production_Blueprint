@@ -11,6 +11,29 @@ def test_cgpa_normalization() -> None:
     assert normalize_cgpa_to_percentage(Decimal("8.1"), Decimal(10)) == Decimal(81)
 
 
+def test_cgpa_cross_scale_comparison() -> None:
+    # 3.0/4.0 = 75%: 8.1/10 (81%) passes, 7.0/10 (70%) does not.
+    ok, _ = evaluate(
+        {"normalized_key": "cgpa_min", "value": {"min": 3.0, "scale": "4.0"}},
+        ProfileFacts(cgpa=Decimal("8.1"), cgpa_scale=Decimal(10)),
+    )
+    assert ok == RequirementStatus.SATISFIED
+    fail, reason = evaluate(
+        {"normalized_key": "cgpa_min", "value": {"min": 3.0, "scale": "4.0"}},
+        ProfileFacts(cgpa=Decimal("7.0"), cgpa_scale=Decimal(10)),
+    )
+    assert fail == RequirementStatus.NOT_SATISFIED
+    assert "normalized" in reason
+
+
+def test_cgpa_same_scale_unchanged() -> None:
+    status, _ = evaluate(
+        {"normalized_key": "cgpa_min", "value": {"min": 3.5}},
+        ProfileFacts(cgpa=Decimal("3.2")),
+    )
+    assert status == RequirementStatus.NOT_SATISFIED
+
+
 def test_missing_ielts_is_unknown_not_guessed() -> None:
     status, _ = evaluate({"normalized_key": "ielts_overall_min", "value": {"min": 6.5}}, ProfileFacts())
     assert status == RequirementStatus.UNKNOWN
