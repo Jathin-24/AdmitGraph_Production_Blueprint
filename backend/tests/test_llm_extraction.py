@@ -61,3 +61,11 @@ def test_llmclaims_rejects_garbage() -> None:
 
     with pytest.raises(ValidationError):
         LLMClaims.model_validate({"claims": "not-a-list"})
+
+
+def test_llmclaims_rejects_flat_model_response() -> None:
+    """Models sometimes answer with a flat dict; the missing wrapper must fail."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        LLMClaims.model_validate({"ielts_overall_min": 6.5})

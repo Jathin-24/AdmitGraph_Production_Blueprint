@@ -186,10 +186,10 @@ class ResearchService:
             }
             year = int(plan.requested_goal.get("intake_year", datetime.now(UTC).year + 1))
             queries = plan_queries(profile, prefs_dict, year)
-            planned = [q.q for q in queries]
+            planned = [{"engine": q.engine, "q": q.q, "purpose": q.purpose} for q in queries]
             plan.planned_queries = planned
             await session.commit()
-            return {"queries": planned}
+            return {"queries": [q.q for q in queries]}
         if step_key == "discovery_search":
             return await self._run_discovery(session, plan)
         if step_key == "normalize_programs":
@@ -283,10 +283,19 @@ class ResearchService:
         return result.scalar_one_or_none()
 
     async def _run_discovery(self, session: AsyncSession, plan: ResearchPlan) -> dict[str, Any]:
-        queries = plan.planned_queries or []
+        entries = plan.planned_queries or []
         results: list[dict[str, Any]] = []
-        for q in queries[:6]:
-            engine = "google_jobs" if "jobs" in q else ("google_news" if "visa policy" in q else "google")
+        for entry in entries[:6]:
+            if isinstance(entry, dict):
+                q = str(entry.get("q", ""))
+                engine = str(entry.get("engine") or "google")
+                purpose = str(entry.get("purpose") or "discovery")
+            else:  # legacy shape: plain string
+                q = str(entry)
+                engine = "google_jobs" if "jobs" in q else ("google_news" if "visa policy" in q else "google")
+                purpose = "discovery"
+            if not q:
+                continue
             try:
                 result = await self._serpapi.search(engine, q)
             except SerpApiError as exc:
@@ -294,7 +303,7 @@ class ResearchService:
                     SearchRun(
                         engine=engine,
                         query=q,
-                        parameters={},
+                        parameters={"purpose": purpose},
                         status=RunStatus.FAILED,
                         error_code=exc.code,
                         error_message=str(exc)[:500],
@@ -306,7 +315,7 @@ class ResearchService:
             run = SearchRun(
                 engine=engine,
                 query=q,
-                parameters=result.parameters,
+                parameters={"purpose": purpose, **result.parameters},
                 serpapi_search_id=result.search_id,
                 status=RunStatus.SUCCEEDED,
                 duration_ms=result.duration_ms,
@@ -365,11 +374,15 @@ class ResearchService:
 
     async def _normalize_programs(self, session: AsyncSession, plan: ResearchPlan) -> dict[str, Any]:
         # Deterministic normalization of search results into candidate programs.
-        # No invented facts: programs are created from observed titles only.
+        # Only program-intent ("discovery") queries feed programs; policy/news/career
+        # results are kept as evidence sources but never become programs.
+        from sqlalchemy import String, cast
+
         rows = await session.execute(
             select(SearchResult)
             .join(SearchRun, SearchResult.search_run_id == SearchRun.id)
             .where(SearchRun.engine == "google")
+            .where(cast(SearchRun.parameters["purpose"], String) == "discovery")
             .limit(20)
         )
         created = 0

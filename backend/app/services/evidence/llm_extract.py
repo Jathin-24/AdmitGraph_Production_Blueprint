@@ -63,7 +63,23 @@ class LLMClaim(BaseModel):
 
 
 class LLMClaims(BaseModel):
-    claims: list[LLMClaim] = Field(default_factory=list)
+    # Required (no default): a response missing the wrapper must fail validation,
+    # so the caller falls back to the next endpoint instead of accepting [] silently.
+    claims: list[LLMClaim]
+
+    @classmethod
+    def example(cls) -> dict[str, Any]:
+        return {
+            "claims": [
+                {
+                    "claim_type": "language",
+                    "normalized_key": "ielts_overall_min",
+                    "value": {"min": 6.5, "test": "IELTS"},
+                    "claim": "Program page states IELTS 6.5 overall required.",
+                    "confidence": "HIGH",
+                }
+            ]
+        }
 
 
 async def extract_claims(
@@ -84,6 +100,8 @@ async def extract_claims(
         "snippet": snippet or "",
         "domain": domain or "",
         "max_claims": MAX_CLAIMS,
+        "required_top_level_key": "claims",
+        "example_output": LLMClaims.example(),
     }
     try:
         result = await provider.generate_structured(input_payload, LLMClaims)

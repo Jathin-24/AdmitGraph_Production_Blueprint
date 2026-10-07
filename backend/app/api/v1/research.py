@@ -61,7 +61,9 @@ async def get_run(run_id: uuid.UUID, session: AsyncSession = Depends(get_session
     return ResearchPlanDetail(
         id=plan.id,
         status=plan.status.value,
-        planned_queries=plan.planned_queries,
+        planned_queries=[
+            q["q"] if isinstance(q, dict) else str(q) for q in (plan.planned_queries or [])
+        ],
         error_message=plan.error_message,
         created_at=plan.created_at,
         started_at=plan.started_at,
