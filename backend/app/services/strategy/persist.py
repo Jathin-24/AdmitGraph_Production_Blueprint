@@ -200,16 +200,19 @@ async def _profile_facts(session: AsyncSession, profile_id: uuid.UUID) -> Profil
     from app.db.models import StudentProfile, TestScore
 
     profile = await session.get(StudentProfile, profile_id)
-    facts = ProfileFacts()
     if profile is None:
-        return facts
-    facts.cgpa = profile.cgpa
-    facts.cgpa_scale = profile.cgpa_scale
-    facts.percentage = profile.percentage
-    facts.backlogs = profile.backlogs or 0
-    facts.total_budget_amount = profile.total_budget_amount
-    facts.budget_currency = profile.budget_currency
-    facts.graduation_year = profile.graduation_year
+        return ProfileFacts()
+    # Built via the constructor so ProfileFacts.__post_init__ normalizes every
+    # numeric fact to Decimal (ORM values may be float in-session).
+    values: dict[str, Any] = {
+        "cgpa": profile.cgpa,
+        "cgpa_scale": profile.cgpa_scale,
+        "percentage": profile.percentage,
+        "backlogs": profile.backlogs or 0,
+        "total_budget_amount": profile.total_budget_amount,
+        "budget_currency": profile.budget_currency,
+        "graduation_year": profile.graduation_year,
+    }
     tests = (
         await session.execute(
             select(TestScore)
@@ -220,6 +223,6 @@ async def _profile_facts(session: AsyncSession, profile_id: uuid.UUID) -> Profil
     ).scalars().first()
     if tests is not None:
         if tests.test_type.upper() in ("IELTS", "IELTS_ACADEMIC"):
-            facts.ielts_overall = tests.overall_score
-        facts.english_test_type = tests.test_type
-    return facts
+            values["ielts_overall"] = tests.overall_score
+        values["english_test_type"] = tests.test_type
+    return ProfileFacts(**values)

@@ -8,7 +8,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Evidence, Requirement, RequirementStatus
+from app.db.models import Evidence, Program, Requirement, RequirementStatus
 from app.services.evidence.llm_extract import KEY_OPERATOR, KEY_TO_REQUIREMENT_TYPE, KNOWN_CLAIM_KEYS
 
 logger = logging.getLogger(__name__)
@@ -32,11 +32,27 @@ async def sync_requirements_from_evidence(
         )
     ).scalars().all()
 
+    # Requirements have a FK to programs: skip evidence whose subject no longer
+    # (or never) exists rather than crashing the caller with an FK violation.
+    subject_ids = {r.subject_id for r in rows if r.subject_id is not None}
+    known_program_ids: set[UUID] = set()
+    if subject_ids:
+        known_program_ids = set(
+            (
+                await session.execute(
+                    select(Program.id).where(Program.id.in_(subject_ids))
+                )
+            ).scalars()
+        )
+
     created = 0
     updated = 0
     seen: set[tuple[UUID, str]] = set()
     for row in rows:
         if row.subject_id is None or not row.normalized_claim:
+            continue
+        if row.subject_id not in known_program_ids:
+            logger.debug("skipping evidence for unknown program subject %s", row.subject_id)
             continue
         key = (row.subject_id, row.normalized_claim)
         if key in seen:

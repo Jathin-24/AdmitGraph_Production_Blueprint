@@ -24,8 +24,19 @@ class ProfileFacts:
     months_experience: int = 0
     subjects: set[str] = field(default_factory=set)
 
+    def __post_init__(self) -> None:
+        # Numeric facts may arrive as float/int (API payloads, in-session ORM
+        # assignments); all comparisons below are Decimal math.
+        self.cgpa = _num(self.cgpa)
+        self.cgpa_scale = _num(self.cgpa_scale)
+        self.percentage = _num(self.percentage)
+        self.ielts_overall = _num(self.ielts_overall)
+        self.total_budget_amount = _num(self.total_budget_amount)
+
 
 def _num(v: Any) -> Decimal | None:
+    if v is None:
+        return None
     try:
         return Decimal(str(v))
     except (TypeError, ValueError, ArithmeticError):

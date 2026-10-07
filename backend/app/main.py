@@ -12,7 +12,18 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.v1 import documents, evidence, health, monitor, onboarding, profile, research, strategies
+from app.api.v1 import (
+    admin,
+    documents,
+    evidence,
+    health,
+    monitor,
+    onboarding,
+    profile,
+    programs,
+    research,
+    strategies,
+)
 from app.core.config import get_settings
 from app.core.errors import (
     AppError,
@@ -116,3 +127,5 @@ app.include_router(evidence.router, prefix="/api/v1")
 app.include_router(monitor.router, prefix="/api/v1")
 app.include_router(strategies.router, prefix="/api/v1")
 app.include_router(documents.router, prefix="/api/v1")
+app.include_router(programs.router, prefix="/api/v1")
+app.include_router(admin.router, prefix="/api/v1")
