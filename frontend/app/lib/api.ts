@@ -50,3 +50,80 @@ export function getRunEvents(runId: string): Promise<ResearchEvents> {
 export function getRun(runId: string): Promise<{ status: string; error_message: string | null }> {
   return apiFetch(`/research/runs/${runId}`);
 }
+
+export interface StrategySummary {
+  id: string;
+  status: string;
+  plan_health_score: string | null;
+  summary: string | null;
+  created_at: string;
+}
+
+export interface StrategyDetail {
+  id: string;
+  status: string;
+  plan_health_score: string | null;
+  summary: string | null;
+  scoring_version: string;
+  strategy_version: string;
+  created_at: string;
+  portfolio: {
+    program_id: string;
+    program_name: string | null;
+    institution: string | null;
+    category: string;
+    priority: number;
+    rationale: string;
+    next_action: string | null;
+    next_deadline: string | null;
+  }[];
+  risks: {
+    id: string;
+    risk_type: string;
+    severity: string;
+    title: string;
+    reason: string;
+    recommended_action: string;
+    status: string;
+  }[];
+  roadmap_tasks: {
+    id: string;
+    title: string;
+    task_type: string;
+    status: string;
+    due_date: string | null;
+  }[];
+}
+
+export interface EvidenceItem {
+  id: string;
+  claim_type: string;
+  claim: string;
+  normalized_claim: string | null;
+  confidence: string;
+  status: string;
+  retrieved_at: string | null;
+  subject_id: string | null;
+}
+
+export function getStrategies(): Promise<{ items: StrategySummary[] }> {
+  return apiFetch("/strategies");
+}
+
+export function getStrategy(strategyId: string): Promise<StrategyDetail> {
+  return apiFetch(`/strategies/${strategyId}`);
+}
+
+export function listEvidence(programId?: string): Promise<{ items: EvidenceItem[] }> {
+  return apiFetch(programId ? `/evidence?program_id=${programId}` : "/evidence");
+}
+
+export function simulateStrategy(
+  strategyId: string,
+  scenario: string
+): Promise<{ counterfactual_run_id?: string; scenario: string; modified_profile?: Record<string, unknown>; error?: string }> {
+  return apiFetch(`/strategies/${strategyId}/simulate`, {
+    method: "POST",
+    body: JSON.stringify({ scenario }),
+  });
+}

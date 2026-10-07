@@ -14,6 +14,9 @@ export default function Home() {
         <Link href="/onboarding" className="rounded-full border px-6 py-3">
           First time studying abroad? Start here
         </Link>
+        <Link href="/dashboard" className="rounded-full border px-6 py-3">
+          Strategy dashboard
+        </Link>
       </div>
     </main>
   );
