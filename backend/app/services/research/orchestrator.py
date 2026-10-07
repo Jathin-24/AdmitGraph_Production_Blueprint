@@ -23,6 +23,7 @@ from app.db.models import (
     SearchResult,
     SearchRun,
     Source,
+    SourceAuthority,
 )
 from app.db.session import get_engine
 from app.services.research.planner import plan_queries
@@ -222,11 +223,19 @@ class ResearchService:
         from app.services.llm import get_llm_provider
 
         provider = get_llm_provider(self._settings)
+        # Program-intent results first: their claims link to programs and feed
+        # requirements; other results are secondary evidence.
+        from sqlalchemy import case
+
+        purpose_rank = case(
+            (SearchRun.parameters["purpose"].astext == "discovery", 0), else_=1
+        )
         rows = (
             await session.execute(
                 select(SearchResult)
+                .join(SearchRun, SearchResult.search_run_id == SearchRun.id)
                 .where(SearchResult.source_id.is_not(None))
-                .order_by(SearchResult.id.desc())
+                .order_by(purpose_rank, SearchResult.id.desc())
                 .limit(MAX_RESULTS_PER_RUN)
             )
         ).scalars().all()
@@ -376,13 +385,11 @@ class ResearchService:
         # Deterministic normalization of search results into candidate programs.
         # Only program-intent ("discovery") queries feed programs; policy/news/career
         # results are kept as evidence sources but never become programs.
-        from sqlalchemy import String, cast
-
         rows = await session.execute(
             select(SearchResult)
             .join(SearchRun, SearchResult.search_run_id == SearchRun.id)
             .where(SearchRun.engine == "google")
-            .where(cast(SearchRun.parameters["purpose"], String) == "discovery")
+            .where(SearchRun.parameters["purpose"].astext == "discovery")
             .limit(20)
         )
         created = 0
@@ -404,6 +411,14 @@ class ResearchService:
 
             source = await session.get(Source, item.source_id)
             if source is None:
+                continue
+            # Never normalize news/social/unknown domains into programs; they may
+            # still contribute evidence, but they are not study programs.
+            if source.source_authority in (
+                SourceAuthority.FORUM_SOCIAL,
+                SourceAuthority.NEWS,
+                SourceAuthority.UNKNOWN,
+            ):
                 continue
             inst = Institution(
                 canonical_name=source.domain or name,

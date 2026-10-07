@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select
@@ -14,6 +13,7 @@ from app.db.models import (
     FitAssessment,
     Program,
     Requirement,
+    RequirementStatus,
     Risk,
     RiskStatus,
     RoadmapTask,
@@ -65,26 +65,32 @@ async def step_score_fit(
         dims: list[DimensionInput] = [
             DimensionInput(
                 dimension="academic",
-                statuses=[r.status for r in reqs if r.requirement_type in ("academic", "cgpa")] or [],
+                statuses=[r.status for r in reqs if r.requirement_type in ("academic", "cgpa")] or [
+                    RequirementStatus.UNKNOWN
+                ],
             ),
             DimensionInput(
                 dimension="prerequisites",
-                statuses=[r.status for r in reqs if r.requirement_type in ("prerequisite", "subjects")],
+                statuses=[r.status for r in reqs if r.requirement_type in ("prerequisite", "subjects")]
+                or [RequirementStatus.UNKNOWN],
             ),
             DimensionInput(
                 dimension="language",
-                statuses=[r.status for r in reqs if r.requirement_type in ("language", "test")],
+                statuses=[r.status for r in reqs if r.requirement_type in ("language", "test")]
+                or [RequirementStatus.UNKNOWN],
             ),
             DimensionInput(
                 dimension="financial",
-                statuses=[r.status for r in reqs if r.requirement_type in ("tuition", "fees", "budget")],
+                statuses=[r.status for r in reqs if r.requirement_type in ("tuition", "fees", "budget")]
+                or [RequirementStatus.UNKNOWN],
             ),
+            # Dimensions without extracted requirements stay UNKNOWN (not zero):
+            # missing evidence is uncertainty, not a failed criterion.
+            DimensionInput("career", [RequirementStatus.UNKNOWN]),
+            DimensionInput("timing", [RequirementStatus.UNKNOWN]),
+            DimensionInput("evidence_confidence", [RequirementStatus.UNKNOWN]),
         ]
-        dims_with_data = [d for d in dims if d.statuses]
-        score, subscores = overall_score(dims_with_data or [DimensionInput("evidence_confidence", [])])
-        if not dims_with_data:
-            # No requirement evidence yet -> unknown, honest score near neutral-low.
-            score = Decimal("25")
+        score, subscores = overall_score(dims)
         session.add(
             FitAssessment(
                 research_plan_id=research_plan_id,
@@ -101,10 +107,22 @@ async def step_score_fit(
 
 
 async def step_assess_risks(session: AsyncSession, profile_id: uuid.UUID) -> dict[str, Any]:
+    from sqlalchemy import delete
+
     reqs = (await session.execute(select(Requirement))).scalars().all()
     eligibility = [(r.normalized_key, r.status, r.mandatory) for r in reqs]
     risks = assess(RiskContext(eligibility=eligibility))
     created = 0
+    new_titles = {risk.title for risk in risks}
+    # Re-evaluation replaces prior OPEN risks; resolved/dismissed ones are kept.
+    if new_titles:
+        await session.execute(
+            delete(Risk).where(
+                Risk.profile_id == profile_id,
+                Risk.status == RiskStatus.OPEN,
+                Risk.title.in_(new_titles),
+            )
+        )
     for risk in risks:
         session.add(
             Risk(
@@ -126,12 +144,12 @@ async def step_assess_risks(session: AsyncSession, profile_id: uuid.UUID) -> dic
 async def step_build_strategy(
     session: AsyncSession, profile_id: uuid.UUID, research_plan_id: uuid.UUID | None
 ) -> dict[str, Any]:
+    fit_query = select(FitAssessment).where(FitAssessment.profile_id == profile_id)
+    if research_plan_id is not None:
+        # Only this run's assessments; earlier runs keep their own strategies.
+        fit_query = fit_query.where(FitAssessment.research_plan_id == research_plan_id)
     fits = (
-        await session.execute(
-            select(FitAssessment)
-            .where(FitAssessment.profile_id == profile_id)
-            .order_by(FitAssessment.overall_score.desc())
-        )
+        await session.execute(fit_query.order_by(FitAssessment.overall_score.desc()))
     ).scalars().all()
     candidates = [Candidate(program_id=str(f.program_id), fit_score=f.overall_score) for f in fits]
     portfolio = build_portfolio(candidates)

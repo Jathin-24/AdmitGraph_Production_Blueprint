@@ -16,7 +16,7 @@ from app.services.llm import LLMError, LLMProvider
 logger = logging.getLogger(__name__)
 
 MAX_CLAIMS = 4
-MAX_RESULTS_PER_RUN = 6
+MAX_RESULTS_PER_RUN = 8
 
 # Keys the deterministic evaluator understands; anything else is stored as
 # evidence but does not create a Requirement row.

@@ -12,6 +12,38 @@ MAX_REQUIREMENTS_QUERIES_PER_PROGRAM = 4
 MAX_FUNDING_QUERIES = 2
 MAX_CAREER_QUERIES = 2
 
+# ISO 3166 alpha-2 -> English country name (static, factual; used to build
+# human-readable search queries because queries with codes rank poorly).
+COUNTRY_NAMES: dict[str, str] = {
+    "DE": "Germany",
+    "NL": "Netherlands",
+    "AT": "Austria",
+    "CH": "Switzerland",
+    "FR": "France",
+    "IE": "Ireland",
+    "US": "United States",
+    "GB": "United Kingdom",
+    "CA": "Canada",
+    "AU": "Australia",
+    "IN": "India",
+    "SE": "Sweden",
+    "DK": "Denmark",
+    "FI": "Finland",
+    "ES": "Spain",
+    "IT": "Italy",
+    "BE": "Belgium",
+    "PT": "Portugal",
+    "PL": "Poland",
+    "NO": "Norway",
+    "NZ": "New Zealand",
+    "SG": "Singapore",
+    "CZ": "Czech Republic",
+}
+
+
+def country_display(code: str) -> str:
+    return COUNTRY_NAMES.get(code.upper(), code)
+
 
 @dataclass
 class PlannedQuery:
@@ -37,16 +69,23 @@ def plan_queries(
     for country in countries[:3]:
         if not country:
             continue
+        name = country_display(country)
+        # Measured to return official university program pages (vs. aggregators):
+        # "{field} Master's admission requirements university {Country}".
         queries.append(
             PlannedQuery(
                 "google",
-                f"{field} MSc {country} official program admission requirements",
+                f"{field} Master's admission requirements university {name}",
                 "discovery",
                 {"gl": country.lower()},
             )
         )
         queries.append(
-            PlannedQuery("google", f"{country} international student visa financial proof official", "policy")
+            PlannedQuery(
+                "google",
+                f"{name} international student visa financial proof official",
+                "policy",
+            )
         )
     queries.append(
         PlannedQuery("google_jobs", f"{field} jobs {countries[0] if countries else ''}".strip(), "career")
