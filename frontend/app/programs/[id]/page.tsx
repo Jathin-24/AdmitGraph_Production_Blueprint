@@ -145,11 +145,17 @@ export default function ProgramDetailPage() {
   });
 
   const savedIds = useQuery({
+    // Same queryKey AND same shape as /explore's saved query — react-query
+    // shares this cache entry across pages, so both must agree.
     queryKey: ["saved-programs"],
-    queryFn: async () => {
-      const out = await listPrograms(1, 100, true);
-      return new Set(out.items.map((sp) => sp.id));
-    },
+    queryFn: () => listPrograms(1, 100, true),
+    // Normalize to a Set, tolerating either shape in a warm cache.
+    select: (raw: unknown): Set<string> =>
+      raw instanceof Set
+        ? (raw as Set<string>)
+        : new Set(
+            ((raw as { items?: { id: string }[] })?.items ?? []).map((sp) => sp.id)
+          ),
   });
   const isSaved = savedIds.data?.has(id) ?? false;
 

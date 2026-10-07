@@ -34,12 +34,18 @@ export default function ExplorePage() {
     queryFn: () => listPrograms(page, 20, savedOnly),
     placeholderData: (prev) => prev,
   });
-  // Saved list drives the Save/Saved toggle state (membership check).
+  // Saved membership for the Save/Saved column — same queryKey + shape as
+  // the program page, normalized to a Set via select.
   const saved = useQuery({
     queryKey: ["saved-programs"],
     queryFn: () => listPrograms(1, 100, true),
+    select: (raw: unknown): Set<string> =>
+      raw instanceof Set
+        ? (raw as Set<string>)
+        : new Set(
+            ((raw as { items?: { id: string }[] })?.items ?? []).map((sp) => sp.id)
+          ),
   });
-  const savedIds = new Set((saved.data?.items ?? []).map((p) => p.id));
 
   const total = programs.data?.total ?? 0;
   const pageSize = programs.data?.page_size ?? 20;
@@ -130,7 +136,7 @@ export default function ExplorePage() {
                             Official ↗
                           </a>
                         )}
-                        <SaveButton programId={p.id} saved={savedIds.has(p.id)} />
+                        <SaveButton programId={p.id} saved={saved.data?.has(p.id) ?? false} />
                       </div>
                     </td>
                   </tr>
