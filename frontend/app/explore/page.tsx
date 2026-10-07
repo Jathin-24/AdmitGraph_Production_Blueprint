@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useState } from "react";
+import { EmptyState, ErrorNote, LoadingNote, PageHeader } from "../components/ui";
 import { listPrograms, saveProgram, unsaveProgram } from "../lib/api";
 
 function SaveButton({ programId, saved }: { programId: string; saved: boolean }) {
@@ -16,9 +17,7 @@ function SaveButton({ programId, saved }: { programId: string; saved: boolean })
       onClick={() => mutation.mutate()}
       disabled={mutation.isPending}
       aria-label={saved ? "Remove from my plan" : "Save to my plan"}
-      className={`rounded-full border px-3 py-1 text-xs ${
-        saved ? "border-black bg-black text-white" : "border-neutral-300 hover:border-black"
-      }`}
+      className={saved ? "btn-secondary btn-sm" : "btn-ghost btn-sm"}
     >
       {saved ? "Saved ✓" : "Save"}
     </button>
@@ -47,98 +46,105 @@ export default function ExplorePage() {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   return (
-    <main className="mx-auto max-w-5xl p-6">
-      <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">Explore programs</h1>
-          <p className="text-sm text-neutral-500">
-            Programs discovered during live research runs — every row traces back to stored
-            evidence, never to guesses.
-          </p>
-        </div>
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={savedOnly}
-            onChange={(e) => {
-              setSavedOnly(e.target.checked);
-              setPage(1);
-            }}
-          />
-          Show only saved
-        </label>
-      </div>
+    <main className="mx-auto max-w-5xl space-y-6 px-5 py-8">
+      <PageHeader
+        eyebrow="Catalog"
+        title="Explore programs"
+        lede="Programs discovered during live research runs — every row traces back to stored evidence, never to guesses."
+        actions={
+          <label className="flex items-center gap-2 self-end text-sm text-ink-soft">
+            <input
+              type="checkbox"
+              checked={savedOnly}
+              onChange={(e) => {
+                setSavedOnly(e.target.checked);
+                setPage(1);
+              }}
+              className="h-4 w-4 accent-[#1D5C46]"
+            />
+            Saved only
+          </label>
+        }
+      />
 
-      {programs.isLoading && <p className="text-neutral-500">Loading programs…</p>}
-
+      {programs.isLoading && <LoadingNote what="Loading programs…" />}
       {programs.isError && (
-        <div role="alert" className="rounded border border-red-200 bg-red-50 p-4 text-sm">
-          Could not load programs: {(programs.error as Error).message}. The backend may be
-          restarting — try again in a moment.
-        </div>
+        <ErrorNote
+          message={`Could not load programs: ${(programs.error as Error).message}. The backend may be restarting — try again in a moment.`}
+        />
       )}
 
       {programs.isSuccess && programs.data.items.length === 0 && (
-        <div className="rounded border border-dashed p-8 text-center">
-          <p className="mb-2 font-medium">No programs yet</p>
-          <p className="mb-4 text-sm text-neutral-500">
-            {savedOnly
-              ? "You haven't saved any programs yet."
-              : "Programs appear after a live research run discovers them."}
-          </p>
-          <Link href="/research" className="rounded-full bg-black px-5 py-2 text-sm text-white">
-            Run live research
-          </Link>
-        </div>
+        <EmptyState
+          title={savedOnly ? "Nothing saved yet" : "No programs yet"}
+          body={
+            savedOnly
+              ? "Save programs from the full list to build your shortlist here."
+              : "Programs appear after a live research run discovers them."
+          }
+          action={
+            <Link href="/research" className="btn-primary btn-sm">
+              Run live research
+            </Link>
+          }
+        />
       )}
 
       {programs.isSuccess && programs.data.items.length > 0 && (
-        <>
-          <ul className="grid gap-3 sm:grid-cols-2">
-            {programs.data.items.map((p) => (
-              <li
-                key={p.id}
-                className="flex flex-col gap-2 rounded-xl border border-neutral-200 p-4"
-              >
-                <Link
-                  href={`/programs/${p.id}`}
-                  className="font-medium leading-snug hover:underline"
-                >
-                  {p.name}
-                </Link>
-                <div className="flex flex-wrap gap-1.5 text-xs text-neutral-500">
-                  {p.country_code && (
-                    <span className="rounded bg-neutral-100 px-1.5 py-0.5">{p.country_code}</span>
-                  )}
-                  {p.degree_type && (
-                    <span className="rounded bg-neutral-100 px-1.5 py-0.5">{p.degree_type}</span>
-                  )}
-                  {p.field_of_study && (
-                    <span className="rounded bg-neutral-100 px-1.5 py-0.5">{p.field_of_study}</span>
-                  )}
-                </div>
-                <div className="mt-auto flex items-center justify-between gap-2">
-                  {p.official_url ? (
-                    <a
-                      href={p.official_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-xs underline text-neutral-500"
-                    >
-                      Official site ↗
-                    </a>
-                  ) : (
-                    <span className="text-xs text-neutral-400">Official URL unknown</span>
-                  )}
-                  <SaveButton programId={p.id} saved={savedIds.has(p.id)} />
-                </div>
-              </li>
-            ))}
-          </ul>
+        <div className="card overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="table-editorial min-w-[640px]">
+              <thead>
+                <tr>
+                  <th className="pl-5">Program</th>
+                  <th>Country</th>
+                  <th>Level</th>
+                  <th>Field</th>
+                  <th className="pr-5 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {programs.data.items.map((p) => (
+                  <tr key={p.id}>
+                    <td className="pl-5">
+                      <Link
+                        href={`/programs/${p.id}`}
+                        className="display text-[15px] font-medium text-ink decoration-forest underline-offset-4 hover:underline"
+                      >
+                        {p.name}
+                      </Link>
+                    </td>
+                    <td className="text-ink-soft">{p.country_code ?? "—"}</td>
+                    <td className="text-ink-soft">{p.degree_type ?? "—"}</td>
+                    <td className="text-ink-soft">{p.field_of_study ?? "—"}</td>
+                    <td className="pr-5">
+                      <div className="flex items-center justify-end gap-2">
+                        {p.official_url && (
+                          <a
+                            href={p.official_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="link text-xs text-ink-faint"
+                            aria-label={`Official site for ${p.name}`}
+                          >
+                            Official ↗
+                          </a>
+                        )}
+                        <SaveButton programId={p.id} saved={savedIds.has(p.id)} />
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
 
-          <nav className="mt-6 flex items-center justify-between text-sm" aria-label="Pagination">
+          <nav
+            className="flex items-center justify-between border-t border-line px-5 py-3 text-sm text-ink-soft"
+            aria-label="Pagination"
+          >
             <button
-              className="rounded border px-3 py-1.5 disabled:opacity-40"
+              className="btn-ghost btn-sm"
               disabled={page <= 1}
               onClick={() => {
                 setPage(page - 1);
@@ -147,11 +153,11 @@ export default function ExplorePage() {
             >
               ← Previous
             </button>
-            <span className="text-neutral-500">
+            <span className="text-xs uppercase tracking-wide text-ink-faint">
               Page {page} of {totalPages} · {total} programs
             </span>
             <button
-              className="rounded border px-3 py-1.5 disabled:opacity-40"
+              className="btn-ghost btn-sm"
               disabled={page >= totalPages}
               onClick={() => {
                 setPage(page + 1);
@@ -161,7 +167,7 @@ export default function ExplorePage() {
               Next →
             </button>
           </nav>
-        </>
+        </div>
       )}
     </main>
   );

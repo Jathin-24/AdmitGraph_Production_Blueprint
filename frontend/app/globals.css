@@ -3,25 +3,120 @@
 @tailwind utilities;
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #faf9f5;
+  --foreground: #16181d;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 body {
   color: var(--foreground);
   background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
 }
 
-@layer utilities {
-  .text-balance {
-    text-wrap: balance;
+::selection {
+  background: #1d5c46;
+  color: #faf9f5;
+}
+
+:focus-visible {
+  outline: 2px solid #1d5c46;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@layer components {
+  /* ---- Typography -------------------------------------------------- */
+  .eyebrow {
+    @apply text-[11px] font-medium uppercase tracking-[0.16em] text-forest;
+  }
+  .display {
+    font-family: "Iowan Old Style", "Palatino Linotype", Georgia, Cambria, serif;
+    letter-spacing: -0.015em;
+  }
+  .lede {
+    @apply text-[17px] leading-relaxed text-ink-soft;
+  }
+
+  /* ---- Surfaces ---------------------------------------------------- */
+  .card {
+    @apply rounded-lg border border-line bg-white shadow-card;
+  }
+
+  /* ---- Buttons ----------------------------------------------------- */
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-md bg-forest px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-forest-dark disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-md border border-line-dark bg-white px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-paper-dark disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium text-ink-soft transition-colors hover:bg-paper-dark hover:text-ink disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-sm {
+    @apply px-3 py-1.5 text-xs;
+  }
+
+  /* ---- Form fields -------------------------------------------------- */
+  .field {
+    @apply w-full rounded-md border border-line-dark bg-white px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-forest focus:outline-none focus:ring-2 focus:ring-forest/20;
+  }
+  .label {
+    @apply block text-[13px] font-medium text-ink;
+  }
+  .hint {
+    @apply text-xs text-ink-faint;
+  }
+
+  /* ---- Tags / status ------------------------------------------------
+     Each variant is self-contained (base + colors) so any variant can be
+     used on its own. -------------------------------------------------- */
+  .chip {
+    @apply inline-flex items-center rounded px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide;
+  }
+  .chip-neutral {
+    @apply inline-flex items-center rounded border border-line bg-paper-dark px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide text-ink-soft;
+  }
+  .chip-good {
+    @apply inline-flex items-center rounded bg-forest-tint px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide text-forest;
+  }
+  .chip-warn {
+    @apply inline-flex items-center rounded bg-amberx-tint px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide text-amberx;
+  }
+  .chip-bad {
+    @apply inline-flex items-center rounded bg-danger-tint px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide text-danger;
+  }
+
+  /* ---- Tables -------------------------------------------------------- */
+  .table-editorial {
+    @apply w-full border-collapse text-sm;
+  }
+  .table-editorial thead th {
+    @apply border-b border-line-dark pb-2 pr-4 text-left text-[10.5px] font-semibold uppercase tracking-[0.12em] text-ink-faint;
+  }
+  .table-editorial tbody tr {
+    @apply border-b border-line transition-colors hover:bg-paper-dark/60;
+  }
+  .table-editorial tbody td {
+    @apply py-3 pr-4 align-top;
+  }
+
+  /* ---- Misc ---------------------------------------------------------- */
+  .link {
+    @apply underline decoration-line-dark underline-offset-4 transition hover:decoration-forest hover:text-forest;
   }
 }

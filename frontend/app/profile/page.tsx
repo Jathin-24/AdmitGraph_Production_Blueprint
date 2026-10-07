@@ -2,7 +2,8 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { ErrorNote, LoadingNote, PageHeader } from "../components/ui";
 import {
   getCompletion,
   getProfile,
@@ -27,6 +28,23 @@ const TEXT_FIELDS: { key: EditableKey; label: string; hint: string }[] = [
   { key: "career_goal", label: "Career goal", hint: "e.g. ML engineer in Germany" },
 ];
 
+const FACTS = (p: ProfileOut): [string, string][] => [
+  ["CGPA", p.cgpa ? `${p.cgpa}${p.cgpa_scale ? ` / ${p.cgpa_scale}` : ""}` : "Unknown"],
+  ["Percentage", p.percentage ?? "Unknown"],
+  ["Backlogs", p.backlogs !== null ? String(p.backlogs) : "Unknown"],
+  [
+    "Experience",
+    p.total_experience_months !== null ? `${p.total_experience_months} months` : "Unknown",
+  ],
+  [
+    "Budget",
+    p.total_budget_amount
+      ? `${p.total_budget_amount} ${p.budget_currency ?? ""}`.trim()
+      : "Unknown",
+  ],
+  ["Graduation year", p.graduation_year ? String(p.graduation_year) : "Unknown"],
+];
+
 export default function ProfilePage() {
   const queryClient = useQueryClient();
   const profile = useQuery({ queryKey: ["profile"], queryFn: getProfile });
@@ -34,6 +52,15 @@ export default function ProfilePage() {
   const [form, setForm] = useState<Record<string, string>>({});
   const [validation, setValidation] = useState<ValidationOut | null>(null);
   const [saved, setSaved] = useState(false);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clear the "Saved." flash timer if the user navigates away mid-flash.
+  useEffect(
+    () => () => {
+      if (savedTimer.current) clearTimeout(savedTimer.current);
+    },
+    []
+  );
 
   useEffect(() => {
     if (profile.data) {
@@ -57,19 +84,24 @@ export default function ProfilePage() {
       queryClient.invalidateQueries({ queryKey: ["profile"] });
       queryClient.invalidateQueries({ queryKey: ["completion"] });
       setSaved(true);
-      setTimeout(() => setSaved(false), 2500);
+      if (savedTimer.current) clearTimeout(savedTimer.current);
+      savedTimer.current = setTimeout(() => setSaved(false), 2500);
     },
   });
 
   const validate = useMutation({ mutationFn: validateProfile, onSuccess: setValidation });
 
-  if (profile.isLoading) return <main className="p-6 text-neutral-500">Loading profile…</main>;
+  if (profile.isLoading) {
+    return (
+      <main className="mx-auto max-w-3xl px-5 py-8">
+        <LoadingNote what="Loading profile…" />
+      </main>
+    );
+  }
   if (profile.isError) {
     return (
-      <main className="p-6" role="alert">
-        <div className="rounded border border-red-200 bg-red-50 p-4 text-sm">
-          Could not load your profile: {(profile.error as Error).message}.
-        </div>
+      <main className="mx-auto max-w-3xl px-5 py-8">
+        <ErrorNote message={`Could not load your profile: ${(profile.error as Error).message}.`} />
       </main>
     );
   }
@@ -79,72 +111,75 @@ export default function ProfilePage() {
   const missing = completion.data?.missing_fields ?? [];
 
   return (
-    <main className="mx-auto max-w-3xl p-6">
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">Your profile</h1>
-          <p className="text-sm text-neutral-500">
-            The facts your strategy is scored against — every recommendation traces back to these.
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Link href="/onboarding" className="rounded-full border px-4 py-1.5 text-sm hover:border-black">
-            Guided setup
-          </Link>
-          <Link href="/research" className="rounded-full bg-black px-4 py-1.5 text-sm text-white">
-            Run research
-          </Link>
-        </div>
-      </div>
+    <main className="mx-auto max-w-3xl space-y-6 px-5 py-8">
+      <PageHeader
+        eyebrow="Your data"
+        title="Your profile"
+        lede="The facts your strategy is scored against — every recommendation traces back to these."
+        actions={
+          <>
+            <Link href="/onboarding" className="btn-secondary">
+              Guided setup
+            </Link>
+            <Link href="/research" className="btn-primary">
+              Run research
+            </Link>
+          </>
+        }
+      />
 
       {/* Completion */}
-      <section className="mb-6 rounded-xl border border-neutral-200 p-4" aria-label="Profile completion">
-        <div className="mb-2 flex items-center justify-between text-sm">
-          <span className="font-medium">Profile completion</span>
-          <span>{pct}%</span>
+      <section className="card p-5" aria-label="Profile completion">
+        <div className="mb-2 flex items-baseline justify-between">
+          <span className="label">Profile completion</span>
+          <span className="display text-2xl font-medium tabular-nums text-forest">{pct}%</span>
         </div>
         <div
-          className="h-2 w-full overflow-hidden rounded bg-neutral-100"
+          className="h-1.5 w-full overflow-hidden rounded bg-paper-dark"
           role="progressbar"
           aria-valuenow={pct}
           aria-valuemin={0}
           aria-valuemax={100}
         >
-          <div className="h-full bg-black transition-all" style={{ width: `${pct}%` }} />
+          <div className="h-full bg-forest transition-all" style={{ width: `${pct}%` }} />
         </div>
         {missing.length > 0 && (
-          <p className="mt-2 text-xs text-neutral-500">
+          <p className="mt-2 text-xs text-ink-faint">
             Missing: {missing.join(", ")} — fill these in the guided setup for sharper scoring.
           </p>
         )}
       </section>
 
       {/* Key facts */}
-      <section className="mb-6 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3" aria-label="Key facts">
-        {[
-          ["CGPA", p.cgpa ? `${p.cgpa}${p.cgpa_scale ? ` / ${p.cgpa_scale}` : ""}` : "Unknown"],
-          ["Percentage", p.percentage ?? "Unknown"],
-          ["Backlogs", p.backlogs !== null ? String(p.backlogs) : "Unknown"],
-          ["Experience", p.total_experience_months !== null ? `${p.total_experience_months} months` : "Unknown"],
-          ["Budget", p.total_budget_amount ? `${p.total_budget_amount} ${p.budget_currency ?? ""}`.trim() : "Unknown"],
-          ["Graduation year", p.graduation_year ? String(p.graduation_year) : "Unknown"],
-        ].map(([label, value]) => (
-          <div key={label} className="rounded border border-neutral-100 p-3">
-            <p className="text-xs text-neutral-400">{label}</p>
-            <p className={value === "Unknown" ? "text-neutral-400" : "font-medium"}>{value}</p>
-          </div>
-        ))}
+      <section aria-label="Key facts">
+        <h2 className="display mb-3 text-lg font-medium">Key facts</h2>
+        <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
+          {FACTS(p).map(([label, value]) => (
+            <div key={label} className="card p-3">
+              <p className="text-[11px] uppercase tracking-wide text-ink-faint">{label}</p>
+              <p
+                className={
+                  value === "Unknown" ? "text-ink-faint" : "font-medium text-ink"
+                }
+              >
+                {value}
+              </p>
+            </div>
+          ))}
+        </div>
       </section>
 
       {/* Edit */}
-      <section className="mb-6 rounded-xl border border-neutral-200 p-4" aria-label="Edit profile">
-        <h2 className="mb-3 font-medium">Edit quick facts</h2>
-        <div className="grid gap-3 sm:grid-cols-2">
+      <section className="card p-5" aria-label="Edit profile">
+        <h2 className="display mb-4 border-b border-line pb-3 text-lg font-medium">
+          Edit quick facts
+        </h2>
+        <div className="grid gap-4 sm:grid-cols-2">
           {TEXT_FIELDS.map((f) => (
-            <label key={f.key} className="flex flex-col gap-1 text-sm">
-              {f.label}
+            <label key={f.key} className="flex flex-col gap-1">
+              <span className="label">{f.label}</span>
               <input
-                className="rounded border p-2"
+                className="field"
                 placeholder={f.hint}
                 value={form[f.key] ?? ""}
                 onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}
@@ -152,38 +187,30 @@ export default function ProfilePage() {
             </label>
           ))}
         </div>
-        <div className="mt-4 flex items-center gap-3">
-          <button
-            onClick={() => save.mutate()}
-            disabled={save.isPending}
-            className="rounded-full bg-black px-5 py-2 text-sm text-white"
-          >
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <button onClick={() => save.mutate()} disabled={save.isPending} className="btn-primary">
             Save changes
           </button>
           <button
             onClick={() => validate.mutate()}
             disabled={validate.isPending}
-            className="rounded-full border px-5 py-2 text-sm hover:border-black"
+            className="btn-secondary"
           >
             Validate profile
           </button>
           {saved && (
-            <span role="status" className="text-sm text-green-700">
+            <span role="status" className="text-sm text-forest">
               Saved.
             </span>
           )}
-          {save.isError && (
-            <span role="alert" className="text-sm text-red-600">
-              {(save.error as Error).message}
-            </span>
-          )}
+          {save.isError && <ErrorNote message={(save.error as Error).message} />}
         </div>
         {validation && (
           <div className="mt-3 text-sm" role="status">
             {validation.valid ? (
-              <p className="text-green-700">Profile looks valid ✓</p>
+              <p className="text-forest">Profile looks valid ✓</p>
             ) : (
-              <ul className="flex list-disc flex-col gap-1 pl-5 text-red-600">
+              <ul className="flex list-disc flex-col gap-1 pl-5 text-danger">
                 {validation.issues.map((i) => (
                   <li key={`${i.field}-${i.message}`}>
                     {i.field}: {i.message}
@@ -195,7 +222,7 @@ export default function ProfilePage() {
         )}
       </section>
 
-      <p className="text-xs text-neutral-400">
+      <p className="text-xs text-ink-faint">
         Your data stays in your profile — it is never sent to any provider, and no admission
         probability is ever computed from it.
       </p>

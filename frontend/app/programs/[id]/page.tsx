@@ -4,6 +4,16 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import {
+  ConfidencePill,
+  EmptyState,
+  ErrorNote,
+  LoadingNote,
+  Section,
+  StatusPill,
+  fmtDate,
+  statusSpec,
+} from "../../components/ui";
+import {
   createSubscription,
   getFit,
   getProgram,
@@ -19,16 +29,6 @@ import {
   type ProfileOut,
   type RequirementItem,
 } from "../../lib/api";
-
-const STATUS_COPY: Record<string, { label: string; cls: string }> = {
-  SATISFIED: { label: "Looks good", cls: "bg-green-100 text-green-800" },
-  PARTIAL: { label: "Needs verification", cls: "bg-yellow-100 text-yellow-800" },
-  NOT_SATISFIED: { label: "Likely blocker", cls: "bg-red-100 text-red-700" },
-  NOT_APPLICABLE: { label: "Not required", cls: "bg-neutral-100 text-neutral-600" },
-  UNKNOWN: { label: "Not enough evidence yet", cls: "bg-neutral-100 text-neutral-500" },
-  CONFLICTING: { label: "Sources disagree — verify", cls: "bg-orange-100 text-orange-700" },
-  NEEDS_VERIFICATION: { label: "Needs verification", cls: "bg-yellow-100 text-yellow-800" },
-};
 
 const CATEGORIES: { label: string; types: string[]; keys: string[] }[] = [
   { label: "Academic background", types: ["academic"], keys: ["cgpa_min", "academic_cgpa_min", "backlogs_max"] },
@@ -51,10 +51,6 @@ const SEVERITY_RANK: Record<string, number> = {
   NOT_APPLICABLE: 6,
 };
 
-function statusCopy(status: string) {
-  return STATUS_COPY[status] ?? STATUS_COPY.UNKNOWN;
-}
-
 function worstStatus(reqs: RequirementItem[]): string {
   if (reqs.length === 0) return "UNKNOWN";
   return [...reqs].sort(
@@ -70,7 +66,7 @@ function formatValue(value: Record<string, unknown>): string {
   if (value.min !== undefined) return `≥ ${String(value.min)}`;
   if (value.max !== undefined) return `≤ ${String(value.max)}`;
   if (value.amount !== undefined) {
-    return `${String(value.amount)} ${value.currency ? String(value.currency) : ""}`.trim();
+    return `${String(value.amount)}${value.currency ? ` ${String(value.currency)}` : ""}`;
   }
   if (Array.isArray(value.subjects)) return (value.subjects as string[]).join(", ");
   return JSON.stringify(value);
@@ -92,12 +88,33 @@ function youColumn(category: string, p: ProfileOut | null): string {
   return "Not provided";
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function EvidenceList({ items }: { items: EvidenceItem[] }) {
   return (
-    <section className="rounded-xl border border-neutral-200 p-5" aria-label={title}>
-      <h2 className="mb-3 text-lg font-semibold">{title}</h2>
-      {children}
-    </section>
+    <ul className="flex flex-col divide-y divide-line">
+      {items.map((e) => (
+        <li key={e.id} className="py-3 first:pt-0 last:pb-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <ConfidencePill confidence={e.confidence} />
+            <StatusPill status={e.status} />
+            <span className="text-[11px] uppercase tracking-wide text-ink-faint">
+              {e.claim_type}
+            </span>
+          </div>
+          <p className="mt-1.5 text-sm text-ink">{e.claim}</p>
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-ink-faint">
+            {e.source_domain && <span>Source: {e.source_domain}</span>}
+            {e.source_authority && <span>Authority: {e.source_authority}</span>}
+            <span>Retrieved: {fmtDate(e.retrieved_at)}</span>
+            {e.freshness_deadline && <span>Fresh until: {fmtDate(e.freshness_deadline)}</span>}
+            {e.source_url && (
+              <a href={e.source_url} target="_blank" rel="noreferrer" className="link">
+                Open source ↗
+              </a>
+            )}
+          </div>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -150,14 +167,21 @@ export default function ProgramDetailPage() {
   });
 
   if (program.isLoading) {
-    return <main className="p-6 text-neutral-500">Loading program…</main>;
+    return (
+      <main className="mx-auto max-w-5xl px-5 py-8">
+        <LoadingNote what="Loading program…" />
+      </main>
+    );
   }
   if (program.isError) {
     return (
-      <main className="p-6" role="alert">
-        <div className="rounded border border-red-200 bg-red-50 p-4 text-sm">
-          Could not load this program: {(program.error as Error).message}.
-        </div>
+      <main className="mx-auto max-w-5xl space-y-4 px-5 py-8">
+        <ErrorNote
+          message={`Could not load this program: ${(program.error as Error).message}.`}
+        />
+        <Link href="/explore" className="link text-sm">
+          ← Back to Explore
+        </Link>
       </main>
     );
   }
@@ -176,90 +200,86 @@ export default function ProgramDetailPage() {
   const tasks = detail.data?.roadmap_tasks ?? [];
 
   return (
-    <main className="mx-auto flex max-w-5xl flex-col gap-4 p-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="text-sm text-neutral-500">
-            {p.institution ?? "Institution unknown"}
-            {p.city ? ` · ${p.city}` : ""}
-            {p.country_code ? ` · ${p.country_code}` : ""}
+    <main className="mx-auto max-w-5xl space-y-5 px-5 py-8">
+      {/* Header */}
+      <header className="border-b border-line pb-6">
+        <Link href="/explore" className="eyebrow mb-3 block hover:text-forest-dark">
+          ← Explore
+        </Link>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="max-w-2xl">
+            <p className="text-sm text-ink-soft">
+              {p.institution ?? "Institution unknown"}
+              {p.city ? ` · ${p.city}` : ""}
+              {p.country_code ? ` · ${p.country_code}` : ""}
+            </p>
+            <h1 className="display mt-1 text-[2rem] font-medium leading-[1.1] text-ink">
+              {p.name}
+            </h1>
+          </div>
+          <div className="flex shrink-0 gap-2">
+            <button onClick={() => save.mutate()} disabled={save.isPending} className={isSaved ? "btn-secondary" : "btn-primary"}>
+              {isSaved ? "Saved ✓" : "Save to my plan"}
+            </button>
+            <button onClick={() => watch.mutate()} disabled={watch.isPending} className="btn-secondary">
+              {watch.isSuccess ? "Watching ✓" : "Watch deadline"}
+            </button>
+          </div>
+        </div>
+        {watch.isSuccess && (
+          <p className="mt-3 text-sm text-forest" role="status">
+            Weekly deadline monitoring started — see the{" "}
+            <Link href="/monitor" className="link">
+              Monitor page
+            </Link>
+            .
           </p>
-          <h1 className="text-2xl font-semibold">{p.name}</h1>
-        </div>
-        <div className="flex gap-2">
-          <button
-            onClick={() => save.mutate()}
-            disabled={save.isPending}
-            className={`rounded-full border px-4 py-1.5 text-sm ${
-              isSaved ? "border-black bg-black text-white" : "border-neutral-300 hover:border-black"
-            }`}
-          >
-            {isSaved ? "Saved ✓" : "Save to my plan"}
-          </button>
-          <button
-            onClick={() => watch.mutate()}
-            disabled={watch.isPending}
-            className="rounded-full border border-neutral-300 px-4 py-1.5 text-sm hover:border-black"
-          >
-            {watch.isSuccess ? "Watching ✓" : "Watch deadline"}
-          </button>
-        </div>
-      </div>
-      {watch.isSuccess && (
-        <p className="text-sm text-green-700" role="status">
-          Weekly deadline monitoring started — see the{" "}
-          <Link href="/monitor" className="underline">
-            Monitor page
-          </Link>
-          .
-        </p>
-      )}
+        )}
+      </header>
 
       {/* 1. Overview */}
-      <Section title="Overview">
-        <div className="flex flex-wrap gap-1.5 text-xs">
+      <Section index="01" title="Overview">
+        <div className="flex flex-wrap gap-1.5">
           {[p.degree_type, p.field_of_study, p.specialization, p.language, p.active ? "Active" : "Inactive"]
             .filter(Boolean)
-            .map((b) => (
-              <span key={String(b)} className="rounded bg-neutral-100 px-2 py-1">
+            .map((b, i) => (
+              <span key={`badge-${i}`} className="chip-neutral">
                 {String(b)}
               </span>
             ))}
-          {p.duration_months && (
-            <span className="rounded bg-neutral-100 px-2 py-1">{p.duration_months} months</span>
-          )}
+          {p.duration_months && <span className="chip-neutral">{p.duration_months} months</span>}
         </div>
         <div className="mt-3 flex flex-wrap gap-4 text-sm">
           {p.official_url && (
-            <a href={p.official_url} target="_blank" rel="noreferrer" className="underline">
+            <a href={p.official_url} target="_blank" rel="noreferrer" className="link">
               Official program page ↗
             </a>
           )}
-          <span className="text-neutral-500">
+          <span className="text-ink-faint">
             {p.requirement_count} requirements · {p.evidence_count} evidence claims
           </span>
-          {p.last_verified_at && (
-            <span className="text-neutral-500">
-              Last verified {new Date(p.last_verified_at).toLocaleDateString()}
-            </span>
-          )}
+          <span className="text-ink-faint">Last verified: {fmtDate(p.last_verified_at)}</span>
         </div>
       </Section>
 
       {/* 2. Why it fits */}
-      <Section title="Why it fits">
+      <Section index="02" title="Why it fits">
         {fitItem ? (
           <div>
-            <p className="mb-1 text-2xl font-semibold">{fitItem.overall_score} / 100 fit</p>
-            <p className="text-sm text-neutral-600">
-              {fitItem.explanation ?? "Score computed from your stored profile and this program's evidence."}
+            <p className="display text-3xl font-medium text-forest">
+              {fitItem.overall_score}
+              <span className="text-lg text-ink-faint"> / 100 fit</span>
             </p>
-            <p className="mt-2 text-xs text-neutral-400">
+            <p className="mt-2 text-sm text-ink-soft">
+              {fitItem.explanation ??
+                "Score computed from your stored profile and this program's evidence."}
+            </p>
+            <p className="mt-2 text-xs text-ink-faint">
               This is an explainable product score, not an admission probability.
             </p>
           </div>
         ) : (
-          <p className="text-sm text-neutral-600">
+          <p className="text-sm text-ink-soft">
             {reqs.length > 0
               ? `${satisfied} of ${reqs.length} known requirements look satisfied so far. Fit scoring appears after a research run completes for your profile.`
               : "Not enough evidence yet — fit scoring appears after a research run extracts this program's requirements."}
@@ -268,16 +288,16 @@ export default function ProgramDetailPage() {
       </Section>
 
       {/* 3. Eligibility matrix */}
-      <Section title="Eligibility matrix">
+      <Section index="03" title="Eligibility matrix">
         <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-sm">
+          <table className="table-editorial min-w-[720px]">
             <thead>
-              <tr className="border-b text-left text-xs uppercase text-neutral-500">
-                <th className="py-2 pr-3">Area</th>
-                <th className="py-2 pr-3">You</th>
-                <th className="py-2 pr-3">Requirement</th>
-                <th className="py-2 pr-3">Status</th>
-                <th className="py-2">Evidence</th>
+              <tr>
+                <th>Area</th>
+                <th>You</th>
+                <th>Requirement</th>
+                <th>Status</th>
+                <th>Evidence</th>
               </tr>
             </thead>
             <tbody>
@@ -285,24 +305,26 @@ export default function ProgramDetailPage() {
                 const catReqs = reqs.filter(
                   (r) => cat.types.includes(r.requirement_type) || cat.keys.includes(r.normalized_key)
                 );
-                const status = worstStatus(catReqs);
-                const copy = statusCopy(status);
-                const catEv = ev.filter((e) => e.normalized_claim && cat.keys.includes(e.normalized_claim));
+                const spec = statusSpec(worstStatus(catReqs));
+                const catEv = ev.filter(
+                  (e) => e.normalized_claim && cat.keys.includes(e.normalized_claim)
+                );
+                const confidences = Array.from(new Set(catEv.map((e) => e.confidence)));
                 return (
-                  <tr key={cat.label} className="border-b border-neutral-100 align-top">
-                    <td className="py-2.5 pr-3 font-medium">{cat.label}</td>
-                    <td className="py-2.5 pr-3 text-neutral-600">{youColumn(cat.label, profile.data ?? null)}</td>
-                    <td className="py-2.5 pr-3 text-neutral-600">
+                  <tr key={cat.label}>
+                    <td className="font-medium text-ink">{cat.label}</td>
+                    <td className="text-ink-soft">{youColumn(cat.label, profile.data ?? null)}</td>
+                    <td className="text-ink-soft">
                       {catReqs.length > 0
                         ? catReqs.map((r) => formatValue(r.value)).join(" · ")
                         : "No requirement evidence yet"}
                     </td>
-                    <td className="py-2.5 pr-3">
-                      <span className={`rounded px-2 py-1 text-xs ${copy.cls}`}>{copy.label}</span>
+                    <td>
+                      <span className={`chip ${spec.cls}`}>{spec.label}</span>
                     </td>
-                    <td className="py-2.5 text-xs text-neutral-500">
+                    <td className="text-xs text-ink-faint">
                       {catEv.length > 0
-                        ? `${catEv.length} claim${catEv.length > 1 ? "s" : ""} (${Array.from(new Set(catEv.map((e) => e.confidence))).join(", ")})`
+                        ? `${catEv.length} claim${catEv.length > 1 ? "s" : ""} (${confidences.join(", ")})`
                         : "—"}
                     </td>
                   </tr>
@@ -314,78 +336,80 @@ export default function ProgramDetailPage() {
       </Section>
 
       {/* 4. Risks */}
-      <Section title="Risks">
+      <Section index="04" title="Risks">
         {blockers.length === 0 && risks.length === 0 ? (
-          <p className="text-sm text-neutral-500">No open risks flagged for this program yet.</p>
+          <p className="text-sm text-ink-faint">No open risks flagged for this program yet.</p>
         ) : (
           <ul className="flex flex-col gap-2 text-sm">
             {blockers.map((r) => (
-              <li key={r.id} className="rounded border border-red-100 bg-red-50 p-3">
-                <span className="mr-2 rounded bg-red-100 px-1.5 py-0.5 text-xs text-red-700">
-                  Likely blocker
+              <li key={r.id} className="rounded-md border-l-4 border-danger bg-danger-tint p-3">
+                <span className="chip chip-bad mr-2">Likely blocker</span>
+                <span className="text-ink">{r.title}</span>
+                <span className="text-ink-soft">
+                  {" "}
+                  — {r.status === "CONFLICTING" ? "sources disagree" : "requirement not met"}
                 </span>
-                {r.title} — {r.status === "CONFLICTING" ? "sources disagree" : "requirement not met"}
               </li>
             ))}
             {risks.map((r) => (
-              <li key={r.id} className="rounded border p-3">
-                <span className="mr-2 rounded bg-neutral-100 px-1.5 py-0.5 text-xs">{r.severity}</span>
-                <span className="font-medium">{r.title}</span>
-                <p className="mt-1 text-neutral-600">{r.reason}</p>
-                <p className="mt-1 text-neutral-500">Next: {r.recommended_action}</p>
+              <li key={r.id} className="rounded-md border border-line bg-paper/60 p-3">
+                <span className="chip chip-warn mr-2">{r.severity}</span>
+                <span className="font-medium text-ink">{r.title}</span>
+                <p className="mt-1 text-ink-soft">{r.reason}</p>
+                <p className="mt-1 text-xs text-ink-faint">Next: {r.recommended_action}</p>
               </li>
             ))}
           </ul>
         )}
         {risks.length > 0 && (
-          <p className="mt-2 text-xs text-neutral-400">
+          <p className="mt-2 text-xs text-ink-faint">
             Plan-level risks apply to your whole strategy, not only this program.
           </p>
         )}
       </Section>
 
       {/* 5. Cost */}
-      <Section title="Cost">
+      <Section index="05" title="Cost">
         {tuitionReq ? (
           <p className="text-sm">
-            Tuition requirement from evidence: <strong>{formatValue(tuitionReq.value)}</strong>{" "}
-            <span className={`ml-2 rounded px-2 py-0.5 text-xs ${statusCopy(tuitionReq.status).cls}`}>
-              {statusCopy(tuitionReq.status).label}
-            </span>
+            Tuition requirement from evidence:{" "}
+            <strong className="text-ink">{formatValue(tuitionReq.value)}</strong>{" "}
+            <StatusPill status={tuitionReq.status} />
           </p>
         ) : p.tuition_amount ? (
           <p className="text-sm">
-            Listed tuition: <strong>{p.tuition_amount} {p.tuition_currency ?? ""}</strong>
-            <span className="ml-2 text-xs text-neutral-400">stored value, not yet evidence-verified</span>
+            Listed tuition:{" "}
+            <strong className="text-ink">
+              {p.tuition_amount} {p.tuition_currency ?? ""}
+            </strong>
+            <span className="ml-2 text-xs text-ink-faint">
+              stored value, not yet evidence-verified
+            </span>
           </p>
         ) : (
-          <p className="text-sm text-neutral-500">
+          <p className="text-sm text-ink-faint">
             Not enough evidence yet — no tuition claim has been extracted from an official source.
           </p>
         )}
         {profile.data?.total_budget_amount && (
-          <p className="mt-2 text-xs text-neutral-500">
+          <p className="mt-2 text-xs text-ink-faint">
             Your budget: {profile.data.total_budget_amount} {profile.data.budget_currency}
           </p>
         )}
       </Section>
 
       {/* 6. Deadline */}
-      <Section title="Deadline">
+      <Section index="06" title="Deadline">
         {deadlineReq ? (
           <p className="text-sm">
-            <strong>{formatValue(deadlineReq.value)}</strong>{" "}
-            <span className={`ml-1 rounded px-2 py-0.5 text-xs ${statusCopy(deadlineReq.status).cls}`}>
-              {statusCopy(deadlineReq.status).label}
+            <strong className="text-ink">{formatValue(deadlineReq.value)}</strong>{" "}
+            <StatusPill status={deadlineReq.status} />
+            <span className="ml-2 text-xs text-ink-faint">
+              verified {fmtDate(deadlineReq.last_verified_at)}
             </span>
-            {deadlineReq.last_verified_at && (
-              <span className="ml-2 text-xs text-neutral-400">
-                verified {new Date(deadlineReq.last_verified_at).toLocaleDateString()}
-              </span>
-            )}
           </p>
         ) : (
-          <p className="text-sm text-neutral-500">
+          <p className="text-sm text-ink-faint">
             Not enough evidence yet — no application deadline has been verified for the selected
             intake. Use “Watch deadline” to get notified when monitoring finds one.
           </p>
@@ -393,9 +417,9 @@ export default function ProgramDetailPage() {
       </Section>
 
       {/* 7. Career signal */}
-      <Section title="Career signal">
+      <Section index="07" title="Career signal">
         {ev.some((e) => e.claim_type === "career") ? (
-          <ul className="flex flex-col gap-1 text-sm">
+          <ul className="flex list-disc flex-col gap-1 pl-5 text-sm text-ink">
             {ev
               .filter((e) => e.claim_type === "career")
               .map((e) => (
@@ -403,29 +427,39 @@ export default function ProgramDetailPage() {
               ))}
           </ul>
         ) : (
-          <p className="text-sm text-neutral-500">
-            Not enough evidence yet — career outcomes for this program haven&apos;t been sourced
-            from live job-market data.
+          <p className="text-sm text-ink-faint">
+            Not enough evidence yet — career outcomes for this program have not been sourced from
+            live job-market data.
           </p>
         )}
       </Section>
 
       {/* 8. Evidence */}
-      <Section title="Evidence">
+      <Section
+        index="08"
+        title="Evidence"
+        aside={<span className="text-xs text-ink-faint">{ev.length} claims</span>}
+      >
         {ev.length === 0 ? (
-          <p className="text-sm text-neutral-500">
-            No evidence claims yet for this program — they appear after a live research run.
-          </p>
+          <EmptyState
+            title="No evidence yet"
+            body="Claims for this program appear after a live research run."
+            action={
+              <Link href="/research" className="btn-primary btn-sm">
+                Run research
+              </Link>
+            }
+          />
         ) : (
           <EvidenceList items={ev} />
         )}
       </Section>
 
       {/* 9. Next actions */}
-      <Section title="Next actions">
-        <ul className="flex list-disc flex-col gap-2 pl-5 text-sm">
+      <Section index="09" title="Next actions">
+        <ul className="flex list-disc flex-col gap-2 pl-5 text-sm text-ink">
           <li>
-            <Link href="/research" className="underline">
+            <Link href="/research" className="link">
               Run live research
             </Link>{" "}
             to refresh this program&apos;s requirements and evidence.
@@ -439,7 +473,7 @@ export default function ProgramDetailPage() {
           {p.official_url && (
             <li>
               Verify on the{" "}
-              <a href={p.official_url} target="_blank" rel="noreferrer" className="underline">
+              <a href={p.official_url} target="_blank" rel="noreferrer" className="link">
                 official page ↗
               </a>{" "}
               before applying — sources can change.
@@ -448,37 +482,5 @@ export default function ProgramDetailPage() {
         </ul>
       </Section>
     </main>
-  );
-}
-
-function EvidenceList({ items }: { items: EvidenceItem[] }) {
-  return (
-    <ul className="flex flex-col gap-3">
-      {items.map((e) => (
-        <li key={e.id} className="rounded border border-neutral-100 p-3 text-sm">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-xs">{e.confidence}</span>
-            <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-xs">{e.status}</span>
-            <span className="text-xs text-neutral-400">{e.claim_type}</span>
-          </div>
-          <p className="mt-1.5">{e.claim}</p>
-          <div className="mt-1.5 flex flex-wrap items-center gap-3 text-xs text-neutral-500">
-            {e.source_domain && <span>Source: {e.source_domain}</span>}
-            {e.source_authority && <span>Authority: {e.source_authority}</span>}
-            {e.retrieved_at && <span>Retrieved: {new Date(e.retrieved_at).toLocaleDateString()}</span>}
-            {e.freshness_deadline && (
-              <span>
-                Fresh until: {new Date(e.freshness_deadline).toLocaleDateString()}
-              </span>
-            )}
-            {e.source_url && (
-              <a href={e.source_url} target="_blank" rel="noreferrer" className="underline">
-                Open source ↗
-              </a>
-            )}
-          </div>
-        </li>
-      ))}
-    </ul>
   );
 }
