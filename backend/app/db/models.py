@@ -23,7 +23,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
@@ -272,6 +272,7 @@ class Program(Base):
     )
     id: Mapped[uuid.UUID] = _uuid_pk()
     institution_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("institutions.id"))
+    institution: Mapped["Institution"] = relationship("Institution")
     canonical_name: Mapped[str] = mapped_column(Text)
     normalized_name: Mapped[str] = mapped_column(Text)
     degree_type: Mapped[str | None] = mapped_column(Text)
@@ -600,6 +601,7 @@ class ApplicationPlan(Base):
     strategy_run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("strategy_runs.id", ondelete="CASCADE"))
     profile_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("student_profiles.id", ondelete="CASCADE"))
     program_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("programs.id"))
+    program: Mapped["Program"] = relationship("Program")
     category: Mapped[ProgramCategory] = mapped_column(
         Enum(ProgramCategory, name="program_category", create_type=False)
     )

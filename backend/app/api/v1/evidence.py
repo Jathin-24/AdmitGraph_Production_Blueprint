@@ -12,6 +12,31 @@ from app.db.session import get_session
 router = APIRouter(tags=["evidence"])
 
 
+@router.get("/evidence")
+async def list_evidence(
+    program_id: uuid.UUID | None = None, session: AsyncSession = Depends(get_session)
+) -> dict[str, Any]:
+    query = select(Evidence).order_by(Evidence.retrieved_at.desc()).limit(50)
+    if program_id is not None:
+        query = query.where(Evidence.subject_type == "program", Evidence.subject_id == program_id)
+    result = await session.execute(query)
+    return {
+        "items": [
+            {
+                "id": str(e.id),
+                "claim_type": e.claim_type,
+                "claim": e.claim,
+                "normalized_claim": e.normalized_claim,
+                "confidence": e.confidence.value,
+                "status": e.status.value,
+                "retrieved_at": e.retrieved_at.isoformat() if e.retrieved_at else None,
+                "subject_id": str(e.subject_id) if e.subject_id else None,
+            }
+            for e in result.scalars().all()
+        ]
+    }
+
+
 @router.get("/evidence/{evidence_id}")
 async def get_evidence(
     evidence_id: uuid.UUID, session: AsyncSession = Depends(get_session)
