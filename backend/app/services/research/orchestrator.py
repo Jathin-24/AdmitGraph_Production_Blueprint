@@ -137,12 +137,6 @@ class ResearchService:
         by_key = {s.step_key: s for s in result.scalars().all()}
         steps = [by_key[k] for k in step_order if k in by_key]
         for step in steps:
-            if step.step_key in ("evaluate_requirements", "score_fit", "assess_risks", "build_strategy"):
-                # Implemented in later phases; marked as not-yet-run safely.
-                step.status = RunStatus.CANCELLED
-                step.error_message = "Not implemented yet"
-                await session.commit()
-                continue
             step.status = RunStatus.RUNNING
             step.started_at = datetime.now(UTC)
             await session.commit()
@@ -193,8 +187,29 @@ class ResearchService:
         if step_key == "normalize_programs":
             return await self._normalize_programs(session, plan)
         if step_key == "extract_evidence":
-            return {"note": "evidence extracted during normalization; LLM extraction seam in place"}
+            return await self._extract_evidence(session, plan)
+        if step_key == "evaluate_requirements":
+            from app.services.strategy.persist import step_evaluate_requirements
+
+            return await step_evaluate_requirements(session, profile.id)
+        if step_key == "score_fit":
+            from app.services.strategy.persist import step_score_fit
+
+            return await step_score_fit(session, profile.id, plan.id)
+        if step_key == "assess_risks":
+            from app.services.strategy.persist import step_assess_risks
+
+            return await step_assess_risks(session, profile.id)
+        if step_key == "build_strategy":
+            from app.services.strategy.persist import step_build_strategy
+
+            return await step_build_strategy(session, profile.id, plan.id)
         raise ValueError(f"Unknown step {step_key}")
+
+    async def _extract_evidence(self, session: AsyncSession, plan: ResearchPlan) -> dict[str, Any]:
+        # Evidence rows are created during normalization when sources exist.
+        rows = (await session.execute(select(SearchResult).limit(20))).scalars().all()
+        return {"search_results": len(rows)}
 
     async def _run_discovery(self, session: AsyncSession, plan: ResearchPlan) -> dict[str, Any]:
         queries = plan.planned_queries or []
