@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import ProfilePreference
+from app.db.models import ProfilePreference, TestScore
 from app.db.session import get_session
 from app.schemas.onboarding import (
     OnboardingAnswersIn,
@@ -40,6 +40,14 @@ async def progress(session: AsyncSession = Depends(get_session)) -> OnboardingPr
         filled.add("preferred_countries")
     if prefs.target_intakes:
         filled.add("target_intakes")
+    english = await session.execute(
+        select(TestScore).where(
+            TestScore.profile_id == profile.id,
+            TestScore.test_type == onboarding_service.ENGLISH_TEST_TYPE,
+        )
+    )
+    if english.scalar_one_or_none() is not None:
+        filled.add("english_test_overall")
     answered = sorted(filled)
     missing_required = sorted(onboarding_service.REQUIRED_KEYS - filled)
     total = len(onboarding_service.REQUIRED_KEYS | filled)

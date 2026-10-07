@@ -96,13 +96,27 @@ export default function OnboardingPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ answers }),
       });
-      if (!res.ok) throw new Error(`save failed (${res.status})`);
+      if (!res.ok) {
+        let detail = `the server rejected the save (${res.status})`;
+        try {
+          const body = await res.json();
+          detail = body?.error?.message ?? detail;
+        } catch {
+          /* non-JSON error body — keep the generic message */
+        }
+        throw new Error(detail);
+      }
       setSaved(true);
       if (savedTimer.current) clearTimeout(savedTimer.current);
       savedTimer.current = setTimeout(() => setSaved(false), 2000);
       return true;
     } catch (e) {
-      setSaveError(e instanceof Error ? e.message : "Could not save your answers");
+      const msg = e instanceof Error ? e.message : "unknown error";
+      setSaveError(
+        msg === "Failed to fetch"
+          ? "cannot reach the server — check that the backend is running, then try again"
+          : msg,
+      );
       return false;
     } finally {
       setSaving(false);
@@ -145,12 +159,15 @@ export default function OnboardingPage() {
             <span className="hint">
               {f.explanation}
               {f.example ? ` e.g. ${f.example}` : ""}
+              {f.input_type === "list" ? " — separate items with commas" : ""}
             </span>
             {f.why_we_ask && (
               <span className="text-xs italic text-ink-soft">Why we ask: {f.why_we_ask}</span>
             )}
             <input
               className="field"
+              inputMode={f.input_type === "number" ? "decimal" : undefined}
+              placeholder={f.example ?? undefined}
               value={answers[f.key] ?? ""}
               onChange={(e) => setAnswers({ ...answers, [f.key]: e.target.value })}
             />

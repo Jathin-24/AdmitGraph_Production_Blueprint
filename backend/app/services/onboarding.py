@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import ProfilePreference
+from app.core.errors import AppError
+from app.db.models import ProfilePreference, TestScore
 from app.schemas.onboarding import OnboardingField, OnboardingSchema, OnboardingStep
 from app.services.profile import get_or_create_profile
 
@@ -141,7 +144,70 @@ PROFILE_FIELD_MAP = {
 }
 PREFERENCE_FIELD_MAP = {"preferred_countries", "target_intakes"}
 
+# Form inputs arrive as strings; these keys target typed columns and must be
+# converted before touching the database (a string in SMALLINT is a 500).
+INT_FIELDS = {"graduation_year"}
+DECIMAL_FIELDS = {"cgpa", "total_budget_amount"}
+TEST_SCORE_FIELDS = {"english_test_overall"}
+ENGLISH_TEST_TYPE = "english_overall"
+
 REQUIRED_KEYS = {f.key for s in ONBOARDING_SCHEMA.steps for f in s.fields if f.required}
+
+
+def _to_decimal(key: str, raw: Any) -> Decimal | None:
+    """Coerce a form value to Decimal; blank/None clears the value."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not raw:
+            return None
+    try:
+        value = Decimal(str(raw))
+    except InvalidOperation:
+        raise AppError(400, "VALIDATION_ERROR", f"Invalid number for {key}") from None
+    if not value.is_finite():
+        raise AppError(400, "VALIDATION_ERROR", f"Invalid number for {key}") from None
+    return value
+
+
+def _to_int(key: str, raw: Any) -> int | None:
+    value = _to_decimal(key, raw)
+    if value is None:
+        return None
+    if value != value.to_integral_value():
+        raise AppError(400, "VALIDATION_ERROR", f"Expected a whole number for {key}")
+    return int(value)
+
+
+def _to_list(raw: Any) -> list[str]:
+    """Normalize a list answer: arrays pass through, comma text is split."""
+    if isinstance(raw, list):
+        items = [str(v).strip() for v in raw]
+    else:
+        items = [part.strip() for part in str(raw).split(",")]
+    return [item for item in items if item]
+
+
+async def _upsert_english_score(
+    session: AsyncSession, profile_id: UUID, score: Decimal | None
+) -> None:
+    result = await session.execute(
+        select(TestScore).where(
+            TestScore.profile_id == profile_id,
+            TestScore.test_type == ENGLISH_TEST_TYPE,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if score is None:
+        if row is not None:
+            await session.delete(row)
+    elif row is None:
+        session.add(
+            TestScore(profile_id=profile_id, test_type=ENGLISH_TEST_TYPE, overall_score=score)
+        )
+    else:
+        row.overall_score = score
 
 
 def answered_keys(profile_filled: set[str], preferences_filled: set[str]) -> list[str]:
@@ -149,6 +215,12 @@ def answered_keys(profile_filled: set[str], preferences_filled: set[str]) -> lis
 
 
 async def apply_answers(session: AsyncSession, answers: dict[str, Any]) -> set[str]:
+    """Persist onboarding answers with column-accurate types.
+
+    Form values are strings: numeric fields are converted (or rejected with a
+    400 instead of a 500), blank values clear the column, list answers are
+    split on commas, and the English test score upserts a TestScore row.
+    """
     profile = await get_or_create_profile(session)
     filled: set[str] = set()
     result = await session.execute(
@@ -157,10 +229,19 @@ async def apply_answers(session: AsyncSession, answers: dict[str, Any]) -> set[s
     preferences = result.scalar_one()
     for key, value in answers.items():
         if key in PROFILE_FIELD_MAP:
-            setattr(profile, key, value)
+            if key in INT_FIELDS:
+                setattr(profile, key, _to_int(key, value))
+            elif key in DECIMAL_FIELDS:
+                setattr(profile, key, _to_decimal(key, value))
+            else:
+                text = value.strip() if isinstance(value, str) else value
+                setattr(profile, key, text or None)
             filled.add(key)
         elif key in PREFERENCE_FIELD_MAP:
-            setattr(preferences, key, value if isinstance(value, list) else [value])
+            setattr(preferences, key, _to_list(value))
+            filled.add(key)
+        elif key in TEST_SCORE_FIELDS:
+            await _upsert_english_score(session, profile.id, _to_decimal(key, value))
             filled.add(key)
     await session.commit()
     return filled
