@@ -11,3 +11,4 @@ build/
 *.pyc
 coverage/
 .venv/
+*.egg-info/
