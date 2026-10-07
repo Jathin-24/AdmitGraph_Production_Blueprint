@@ -11,7 +11,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1 import evidence, health, onboarding, profile, research
+from app.api.v1 import evidence, health, monitor, onboarding, profile, research, strategies
 from app.core.config import get_settings
 from app.core.errors import (
     AppError,
@@ -62,3 +62,5 @@ app.include_router(profile.router, prefix="/api/v1")
 app.include_router(onboarding.router, prefix="/api/v1")
 app.include_router(research.router, prefix="/api/v1")
 app.include_router(evidence.router, prefix="/api/v1")
+app.include_router(monitor.router, prefix="/api/v1")
+app.include_router(strategies.router, prefix="/api/v1")
