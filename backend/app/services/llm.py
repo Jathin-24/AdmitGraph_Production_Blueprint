@@ -25,9 +25,11 @@ class OpenAICompatibleLLMProvider:
         self, input: dict[str, Any], schema: type[T], model_config: dict[str, Any] | None = None
     ) -> T:
         import json as _json
+        import logging
 
         import httpx
 
+        logger = logging.getLogger(__name__)
         last_error: Exception | None = None
         for endpoint in self._endpoints:
             try:
@@ -60,10 +62,13 @@ class OpenAICompatibleLLMProvider:
                 content = payload["choices"][0]["message"]["content"]
                 data = _json.loads(content)
                 return schema.model_validate(data)
-            except (LLMError, ValidationError, ValueError, KeyError) as exc:
+            except Exception as exc:  # noqa: BLE001 - one bad endpoint must not kill the chain
+                # Network blips (DNS/timeouts), HTTP errors, invalid JSON or schema
+                # mismatch all fall through to the next configured endpoint.
+                logger.info("LLM endpoint %s failed: %r", endpoint["provider"], exc)
                 last_error = exc
                 continue
-        raise LLMError(f"All LLM endpoints failed: {last_error}")
+        raise LLMError(f"All LLM endpoints failed: {last_error!r}")
 
 
 class LLMProvider(Protocol):

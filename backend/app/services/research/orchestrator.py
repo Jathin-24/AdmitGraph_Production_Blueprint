@@ -160,7 +160,7 @@ class ResearchService:
                     raise
             except Exception as exc:  # noqa: BLE001
                 step.status = RunStatus.FAILED
-                step.error_message = str(exc)[:1000]
+                step.error_message = (str(exc) or repr(exc))[:1000]
             step.completed_at = datetime.now(UTC)
             await session.commit()
 

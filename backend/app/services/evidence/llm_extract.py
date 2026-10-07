@@ -11,7 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.services.llm import LLMError, LLMProvider
+from app.services.llm import LLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +105,7 @@ async def extract_claims(
     }
     try:
         result = await provider.generate_structured(input_payload, LLMClaims)
-    except LLMError as exc:
-        logger.info("LLM extraction unavailable: %s", exc)
+    except Exception as exc:  # noqa: BLE001 - extraction must degrade to "no claims", never fail the run
+        logger.info("LLM extraction unavailable: %r", exc)
         return None
     return LLMClaims(claims=result.claims[:MAX_CLAIMS])
