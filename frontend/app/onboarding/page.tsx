@@ -7,6 +7,7 @@ interface Field {
   question: string;
   explanation: string;
   example?: string;
+  why_we_ask?: string;
   input_type: string;
 }
 interface Step {
@@ -50,6 +51,9 @@ export default function OnboardingPage() {
         <label key={f.key} className="flex flex-col gap-1">
           <span className="font-medium">{f.question}</span>
           <span className="text-sm text-neutral-500">{f.explanation}{f.example ? ` e.g. ${f.example}` : ""}</span>
+          {f.why_we_ask && (
+            <span className="text-xs italic text-neutral-400">Why we ask: {f.why_we_ask}</span>
+          )}
           <input
             className="rounded border p-2"
             value={answers[f.key] ?? ""}

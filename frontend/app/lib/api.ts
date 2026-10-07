@@ -103,7 +103,107 @@ export interface EvidenceItem {
   confidence: string;
   status: string;
   retrieved_at: string | null;
+  freshness_deadline?: string | null;
   subject_id: string | null;
+  source_url?: string | null;
+  source_domain?: string | null;
+  source_authority?: string | null;
+}
+
+export interface ProgramListItem {
+  id: string;
+  name: string;
+  country_code: string | null;
+  degree_type: string | null;
+  field_of_study: string | null;
+  official_url: string | null;
+}
+
+export interface ProgramDetail extends ProgramListItem {
+  institution: string | null;
+  institution_domain: string | null;
+  city: string | null;
+  specialization: string | null;
+  language: string | null;
+  duration_months: number | null;
+  tuition_amount: string | null;
+  tuition_currency: string | null;
+  active: boolean;
+  last_verified_at: string | null;
+  requirement_count: number;
+  evidence_count: number;
+}
+
+export interface RequirementItem {
+  id: string;
+  requirement_type: string;
+  title: string;
+  normalized_key: string;
+  operator: string;
+  value: Record<string, unknown>;
+  mandatory: boolean;
+  status: string;
+  last_verified_at: string | null;
+}
+
+export interface ProfileOut {
+  id: string;
+  current_degree: string | null;
+  field_of_study: string | null;
+  institution_name: string | null;
+  institution_country_code: string | null;
+  graduation_year: number | null;
+  cgpa: string | null;
+  cgpa_scale: string | null;
+  percentage: string | null;
+  backlogs: number | null;
+  total_experience_months: number | null;
+  budget_currency: string | null;
+  total_budget_amount: string | null;
+  annual_budget_amount: string | null;
+  tuition_budget_amount: string | null;
+  scholarship_dependence: boolean | null;
+  career_goal: string | null;
+  profile_completion: string | null;
+  onboarding_version: string;
+}
+
+export interface CompletionOut {
+  profile_completion: number;
+  missing_fields: string[];
+}
+
+export interface ValidationOut {
+  valid: boolean;
+  issues: { field: string; message: string }[];
+}
+
+export interface Subscription {
+  id: string;
+  field_key: string;
+  frequency: string;
+  enabled: boolean;
+}
+
+export interface MonitorCheck {
+  id: string;
+  change_type: string;
+  material_change: boolean;
+  old_value: unknown;
+  new_value: unknown;
+}
+
+export interface MonitorChange {
+  id: string;
+  change_type: string;
+  material_change: boolean;
+  checked_at: string;
+}
+
+export interface FitItem {
+  program_id: string;
+  overall_score: string;
+  explanation: string | null;
 }
 
 export function getStrategies(): Promise<{ items: StrategySummary[] }> {
@@ -112,6 +212,10 @@ export function getStrategies(): Promise<{ items: StrategySummary[] }> {
 
 export function getStrategy(strategyId: string): Promise<StrategyDetail> {
   return apiFetch(`/strategies/${strategyId}`);
+}
+
+export function getFit(strategyId: string): Promise<{ scoring_version: string; items: FitItem[] }> {
+  return apiFetch(`/strategies/${strategyId}/fit`);
 }
 
 export function listEvidence(programId?: string): Promise<{ items: EvidenceItem[] }> {
@@ -126,4 +230,68 @@ export function simulateStrategy(
     method: "POST",
     body: JSON.stringify({ scenario }),
   });
+}
+
+export function listPrograms(
+  page = 1,
+  pageSize = 20,
+  savedOnly = false
+): Promise<{ items: ProgramListItem[]; page: number; page_size: number; total: number; next_cursor: string | null }> {
+  const saved = savedOnly ? "&saved_only=true" : "";
+  return apiFetch(`/programs?page=${page}&page_size=${pageSize}${saved}`);
+}
+
+export function getProgram(programId: string): Promise<ProgramDetail> {
+  return apiFetch(`/programs/${programId}`);
+}
+
+export function getProgramRequirements(programId: string): Promise<{ items: RequirementItem[] }> {
+  return apiFetch(`/programs/${programId}/requirements`);
+}
+
+export function saveProgram(programId: string): Promise<{ saved: boolean }> {
+  return apiFetch(`/programs/${programId}/save`, { method: "POST" });
+}
+
+export function unsaveProgram(programId: string): Promise<{ saved: boolean }> {
+  return apiFetch(`/programs/${programId}/save`, { method: "DELETE" });
+}
+
+export function getProfile(): Promise<ProfileOut> {
+  return apiFetch("/me/profile");
+}
+
+export function getCompletion(): Promise<CompletionOut> {
+  return apiFetch("/me/profile/completion");
+}
+
+export function updateProfile(patch: Record<string, unknown>): Promise<ProfileOut> {
+  return apiFetch("/me/profile", { method: "PATCH", body: JSON.stringify(patch) });
+}
+
+export function validateProfile(): Promise<ValidationOut> {
+  return apiFetch("/me/profile/validate", { method: "POST", body: JSON.stringify({}) });
+}
+
+export function listSubscriptions(): Promise<{ items: Subscription[] }> {
+  return apiFetch("/monitor/subscriptions");
+}
+
+export function createSubscription(input: {
+  field_key: string;
+  frequency: string;
+  program_id?: string;
+}): Promise<{ id: string }> {
+  return apiFetch("/monitor/subscriptions", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function checkSubscription(subscriptionId: string): Promise<MonitorCheck> {
+  return apiFetch(`/monitor/subscriptions/${subscriptionId}/check`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function getSubscriptionChanges(subscriptionId: string): Promise<{ items: MonitorChange[] }> {
+  return apiFetch(`/monitor/subscriptions/${subscriptionId}/changes`);
 }

@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError
-from app.db.models import Evidence, Program, Requirement, SavedProgram
+from app.db.models import Evidence, Program, Requirement, SavedProgram, Source
 from app.db.session import get_session
 from app.services.profile import get_or_create_profile
 
@@ -95,11 +95,17 @@ async def get_program(
         "institution": program.institution.canonical_name if program.institution else None,
         "institution_domain": program.institution.domain if program.institution else None,
         "country_code": program.country_code,
+        "city": program.city,
         "degree_type": program.degree_type,
         "field_of_study": program.field_of_study,
+        "specialization": program.specialization,
         "language": program.language,
         "official_url": program.official_url,
         "duration_months": program.duration_months,
+        "tuition_amount": str(program.tuition_amount) if program.tuition_amount else None,
+        "tuition_currency": program.tuition_currency,
+        "active": program.active,
+        "last_verified_at": program.last_verified_at.isoformat() if program.last_verified_at else None,
         "requirement_count": req_count,
         "evidence_count": ev_count,
     }
@@ -142,16 +148,17 @@ async def get_program_evidence(
     await _get_program(session, program_id)
     rows = (
         await session.execute(
-            select(Evidence)
+            select(Evidence, Source)
+            .join(Source, Evidence.source_id == Source.id, isouter=True)
             .where(Evidence.subject_type == "program", Evidence.subject_id == program_id)
             .order_by(Evidence.retrieved_at.desc())
             .limit(100)
         )
-    ).scalars().all()
+    ).all()
     return {"items": _evidence_rows(rows)}
 
 
-def _evidence_rows(rows: Sequence[Evidence]) -> list[dict[str, Any]]:
+def _evidence_rows(rows: Sequence[tuple[Evidence, Source | None]]) -> list[dict[str, Any]]:
     return [
         {
             "id": str(e.id),
@@ -165,9 +172,12 @@ def _evidence_rows(rows: Sequence[Evidence]) -> list[dict[str, Any]]:
                 e.freshness_deadline.isoformat() if e.freshness_deadline else None
             ),
             "source_id": str(e.source_id),
+            "source_url": s.url if s else None,
+            "source_domain": s.domain if s else None,
+            "source_authority": s.source_authority.value if s else None,
             "search_result_id": str(e.search_result_id) if e.search_result_id else None,
         }
-        for e in rows
+        for e, s in rows
     ]
 
 

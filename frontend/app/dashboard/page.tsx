@@ -47,12 +47,27 @@ function EvidenceDrawer({ programId, onClose }: { programId: string; onClose: ()
       ) : (
         <ul className="flex flex-col gap-2">
           {(data?.items ?? []).map((e: EvidenceItem) => (
-            <li key={e.id} className="text-sm">
+            <li key={e.id} className="rounded border border-neutral-100 p-2 text-sm">
               <span className="mr-2 rounded bg-neutral-100 px-1.5 py-0.5 text-xs">
                 {e.confidence}
               </span>
               {e.claim}
               <span className="ml-2 text-xs text-neutral-400">{e.status}</span>
+              <div className="mt-1 flex flex-wrap gap-3 text-xs text-neutral-500">
+                {e.source_domain && <span>Source: {e.source_domain}</span>}
+                {e.source_authority && <span>Authority: {e.source_authority}</span>}
+                {e.retrieved_at && (
+                  <span>Retrieved: {new Date(e.retrieved_at).toLocaleDateString()}</span>
+                )}
+                {e.freshness_deadline && (
+                  <span>Fresh until: {new Date(e.freshness_deadline).toLocaleDateString()}</span>
+                )}
+                {e.source_url && (
+                  <a href={e.source_url} target="_blank" rel="noreferrer" className="underline">
+                    Open source ↗
+                  </a>
+                )}
+              </div>
             </li>
           ))}
         </ul>

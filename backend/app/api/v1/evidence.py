@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError
-from app.db.models import Evidence, EvidenceConflict, EvidenceConflictMember
+from app.db.models import Evidence, EvidenceConflict, EvidenceConflictMember, Source
 from app.db.session import get_session
 
 router = APIRouter(tags=["evidence"])
@@ -16,10 +16,15 @@ router = APIRouter(tags=["evidence"])
 async def list_evidence(
     program_id: uuid.UUID | None = None, session: AsyncSession = Depends(get_session)
 ) -> dict[str, Any]:
-    query = select(Evidence).order_by(Evidence.retrieved_at.desc()).limit(50)
+    query = (
+        select(Evidence, Source)
+        .join(Source, Evidence.source_id == Source.id, isouter=True)
+        .order_by(Evidence.retrieved_at.desc())
+        .limit(50)
+    )
     if program_id is not None:
         query = query.where(Evidence.subject_type == "program", Evidence.subject_id == program_id)
-    result = await session.execute(query)
+    rows = (await session.execute(query)).all()
     return {
         "items": [
             {
@@ -30,9 +35,15 @@ async def list_evidence(
                 "confidence": e.confidence.value,
                 "status": e.status.value,
                 "retrieved_at": e.retrieved_at.isoformat() if e.retrieved_at else None,
+                "freshness_deadline": (
+                    e.freshness_deadline.isoformat() if e.freshness_deadline else None
+                ),
                 "subject_id": str(e.subject_id) if e.subject_id else None,
+                "source_url": s.url if s else None,
+                "source_domain": s.domain if s else None,
+                "source_authority": s.source_authority.value if s else None,
             }
-            for e in result.scalars().all()
+            for e, s in rows
         ]
     }
 
