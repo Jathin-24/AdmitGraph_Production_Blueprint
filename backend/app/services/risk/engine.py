@@ -35,7 +35,8 @@ class RiskAssessment:
 
 @dataclass
 class RiskContext:
-    eligibility: list[tuple[str, RequirementStatus, bool]] = field(default_factory=list)  # (key, status, mandatory)
+    eligibility: list[tuple[str, RequirementStatus, bool]] = field(default_factory=list)
+    # tuple is (requirement key, status, mandatory)
     budget: Decimal | None = None
     estimated_cost: Decimal | None = None
     next_deadline: date | None = None
@@ -57,7 +58,9 @@ def assess(ctx: RiskContext, today: date | None = None) -> list[RiskAssessment]:
                     severity=severity,
                     title=f"Requirement not met: {key}",
                     reason=f"Mandatory requirement '{key}' is not satisfied by the current profile.",
-                    recommended_action=f"Address '{key}' before applying or choose a program without this requirement.",
+                    recommended_action=(
+                        f"Address '{key}' before applying or choose a program without this requirement."
+                    ),
                 )
             )
         elif status in (RequirementStatus.UNKNOWN, RequirementStatus.NEEDS_VERIFICATION):
@@ -77,7 +80,9 @@ def assess(ctx: RiskContext, today: date | None = None) -> list[RiskAssessment]:
                     severity=RiskSeverity.HIGH,
                     title=f"Conflicting information for {key}",
                     reason=f"Sources disagree about '{key}'.",
-                    recommended_action="Check the official source directly; do not rely on a single secondary claim.",
+                    recommended_action=(
+                        "Check the official source directly; do not rely on a single secondary claim."
+                    ),
                 )
             )
 
