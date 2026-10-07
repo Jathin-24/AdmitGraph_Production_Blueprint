@@ -34,3 +34,29 @@ See:
 - `serpapi_docs/SERPAPI_INTEGRATION.md`
 - `prompts/OPENCODE_MASTER_PROMPT.md`
 - `tests/TEST_PLAN.md`
+
+## Local setup
+```bash
+cp .env.example .env
+
+# Backend
+cd backend
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\Activate.ps1
+pip install -e ".[dev]"
+uvicorn app.main:app --reload
+
+# Frontend
+cd frontend
+npm ci
+npm run dev
+
+# Infra (Postgres + Redis)
+docker compose -f deployment/docker-compose.yml up -d postgres redis
+```
+
+## Checks
+```bash
+cd backend && ruff check app tests && mypy app && pytest -q
+cd frontend && npm run lint && npx tsc --noEmit && npm run build
+```
