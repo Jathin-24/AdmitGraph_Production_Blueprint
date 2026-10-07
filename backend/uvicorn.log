@@ -28,3 +28,5 @@ INFO:     127.0.0.1:51487 - "GET /health HTTP/1.1" 404 Not Found
 INFO:     127.0.0.1:51502 - "GET /health HTTP/1.1" 404 Not Found
 INFO:     127.0.0.1:51511 - "GET /health HTTP/1.1" 404 Not Found
 INFO:     127.0.0.1:51541 - "GET /health HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:51584 - "GET /health HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:51592 - "GET /health HTTP/1.1" 404 Not Found
