@@ -45,6 +45,23 @@ def country_display(code: str) -> str:
     return COUNTRY_NAMES.get(code.upper(), code)
 
 
+# Common field abbreviations -> full degree wording (static, factual; searches
+# for "AI Master's" rank aggregator listicles, "Artificial Intelligence
+# Master's" ranks university pages).
+FIELD_DISPLAY: dict[str, str] = {
+    "AI": "Artificial Intelligence",
+    "CS": "Computer Science",
+    "ML": "Machine Learning",
+    "DS": "Data Science",
+    "IT": "Information Technology",
+    "MBA": "Business Administration",
+}
+
+
+def field_display(field: str) -> str:
+    return FIELD_DISPLAY.get(field.strip(), field)
+
+
 @dataclass
 class PlannedQuery:
     engine: str
@@ -63,7 +80,7 @@ def _profile_countries(profile: StudentProfile, preferences: dict[str, Any]) -> 
 def plan_queries(
     profile: StudentProfile, preferences: dict[str, Any], intake_year: int
 ) -> list[PlannedQuery]:
-    field = profile.field_of_study or "graduate"
+    field = field_display(profile.field_of_study or "graduate")
     countries = _profile_countries(profile, preferences) or [profile.institution_country_code or ""]
     queries: list[PlannedQuery] = []
     for country in countries[:3]:
