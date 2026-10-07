@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings, get_settings
 from app.db.models import (
+    ConfidenceLevel,
     Program,
     ResearchPlan,
     ResearchPlanStep,
@@ -32,6 +33,13 @@ logger = logging.getLogger(__name__)
 
 STRATEGY_VERSION = "v1"
 SCORING_VERSION = "v1"
+
+
+def _to_confidence(raw: str) -> ConfidenceLevel:
+    try:
+        return ConfidenceLevel(raw.upper())
+    except ValueError:
+        return ConfidenceLevel.LOW
 
 
 def idempotency_hash(profile_id: uuid.UUID, goal: dict[str, Any]) -> str:
@@ -207,9 +215,72 @@ class ResearchService:
         raise ValueError(f"Unknown step {step_key}")
 
     async def _extract_evidence(self, session: AsyncSession, plan: ResearchPlan) -> dict[str, Any]:
-        # Evidence rows are created during normalization when sources exist.
-        rows = (await session.execute(select(SearchResult).limit(20))).scalars().all()
-        return {"search_results": len(rows)}
+        """LLM claim extraction from recent search results -> Evidence rows -> Requirements."""
+        from app.services.evidence.extraction import EvidenceExtractionService, ExtractedClaim
+        from app.services.evidence.llm_extract import MAX_RESULTS_PER_RUN, extract_claims
+        from app.services.evidence.requirements import sync_requirements_from_evidence
+        from app.services.llm import get_llm_provider
+
+        provider = get_llm_provider(self._settings)
+        rows = (
+            await session.execute(
+                select(SearchResult)
+                .where(SearchResult.source_id.is_not(None))
+                .order_by(SearchResult.id.desc())
+                .limit(MAX_RESULTS_PER_RUN)
+            )
+        ).scalars().all()
+
+        extraction = EvidenceExtractionService()
+        claims_created = 0
+        for item in rows:
+            source = await session.get(Source, item.source_id)
+            if source is None:
+                continue
+            llm_claims = await extract_claims(
+                provider,
+                title=item.title,
+                snippet=item.snippet,
+                domain=source.domain,
+            )
+            if llm_claims is None or not llm_claims.claims:
+                continue
+            program = await self._match_program(session, item)
+            extracted = [
+                ExtractedClaim(
+                    claim_type=c.claim_type,
+                    normalized_key=c.normalized_key,
+                    value=c.value,
+                    claim=c.claim,
+                    confidence=_to_confidence(c.confidence),
+                    subject_type="program",
+                    subject_id=program.id if program else None,
+                )
+                for c in llm_claims.claims
+            ]
+            await extraction.record_claims(
+                session, source, item, extracted, extraction_model=None
+            )
+            claims_created += len(extracted)
+
+        synced = await sync_requirements_from_evidence(session)
+        return {
+            "claims_created": claims_created,
+            "requirements_synced": synced,
+            "results_processed": len(rows),
+        }
+
+    async def _match_program(self, session: AsyncSession, item: SearchResult) -> Program | None:
+        """Link a search result to the program normalized from the same title."""
+        if not item.title:
+            return None
+        normalized = item.title.split(" - ")[0].strip().lower()
+        if not normalized:
+            return None
+        result = await session.execute(
+            select(Program).where(Program.normalized_name == normalized).limit(1)
+        )
+        return result.scalar_one_or_none()
 
     async def _run_discovery(self, session: AsyncSession, plan: ResearchPlan) -> dict[str, Any]:
         queries = plan.planned_queries or []
