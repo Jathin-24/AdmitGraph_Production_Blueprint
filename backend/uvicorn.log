@@ -1,0 +1,17 @@
+INFO:     127.0.0.1:51002 - "POST /api/v1/me/profile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51005 - "GET /api/v1/me/profile/completion HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51007 - "POST /api/v1/onboarding/answers HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51009 - "GET /api/v1/onboarding/progress HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51017 - "GET /health HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:51042 - "GET /health HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:51067 - "GET /health HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:51087 - "GET /health HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:51100 - "GET /health HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:51122 - "GET /health HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:51173 - "GET /health HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:51194 - "GET /health HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:51212 - "GET /health HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:51252 - "GET /health HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:51255 - "GET /health HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:51290 - "GET /health HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:51315 - "GET /health HTTP/1.1" 404 Not Found
