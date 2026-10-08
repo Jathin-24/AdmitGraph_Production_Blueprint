@@ -3,6 +3,9 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { AccountMenu } from "./account";
+import { NotificationsBell } from "./notifications-bell";
+
 const ITEMS = [
   { href: "/explore", label: "Explore" },
   { href: "/dashboard", label: "My Plan" },
@@ -68,9 +71,13 @@ export function Nav() {
           })}
         </div>
 
-        <Link href="/research" className="btn-primary btn-sm">
-          Build my strategy
-        </Link>
+        <div className="flex items-center gap-3">
+          <Link href="/research" className="btn-primary btn-sm">
+            Build my strategy
+          </Link>
+          <NotificationsBell />
+          <AccountMenu />
+        </div>
       </nav>
     </header>
   );

@@ -57,6 +57,21 @@ export function ConfidencePill({ confidence }: { confidence: string }) {
   );
 }
 
+/** Evidence-level status copy (FRONTEND_SPEC §Evidence drawer: source conflict
+ *  status must be obvious). Requirement-level copy stays in STATUS_COPY. */
+export const EVIDENCE_STATUS_COPY: Record<string, StatusSpec> = {
+  CURRENT: { label: "Current", cls: "chip-good" },
+  STALE: { label: "Stale — may have changed", cls: "chip-warn" },
+  CONFLICTING: { label: "Conflicting information", cls: "chip-bad" },
+  UNAVAILABLE: { label: "Source unavailable", cls: "chip-neutral" },
+  NEEDS_VERIFICATION: { label: "Needs verification", cls: "chip-warn" },
+};
+
+export function EvidenceStatusChip({ status }: { status: string }) {
+  const s = EVIDENCE_STATUS_COPY[status] ?? statusSpec(status);
+  return <span className={`chip ${s.cls}`}>{s.label}</span>;
+}
+
 /* ------------------------------------------------------------ page parts */
 
 export function PageHeader({

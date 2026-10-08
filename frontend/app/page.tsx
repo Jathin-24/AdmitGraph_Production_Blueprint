@@ -46,7 +46,13 @@ export default function Home() {
           <Link href="/onboarding" className="btn-secondary px-6 py-2.5">
             First time studying abroad? Start here
           </Link>
+          <Link href="/research" className="btn-secondary px-6 py-2.5">
+            See a full example →
+          </Link>
         </div>
+        <p className="mt-3 text-center text-xs text-ink-faint">
+          Runs instantly with real sourced data — no search credits used.
+        </p>
         <Link
           href="/dashboard"
           className="link mt-5 text-sm text-ink-soft"

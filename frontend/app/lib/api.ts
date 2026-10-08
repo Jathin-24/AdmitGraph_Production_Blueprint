@@ -1,5 +1,24 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
+export const TOKEN_KEY = "admitgraph_token";
+
+/** Bearer token for authenticated requests; null = anonymous demo session. */
+export function getToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setToken(token: string | null): void {
+  if (typeof window === "undefined") return;
+  if (token) localStorage.setItem(TOKEN_KEY, token);
+  else localStorage.removeItem(TOKEN_KEY);
+}
+
+function authHeaders(): Record<string, string> {
+  const token = getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export interface ResearchRunOut {
   research_plan_id: string;
   status: string;
@@ -19,11 +38,15 @@ export interface ResearchEvents {
 }
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const hadToken = getToken() !== null;
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    headers: { "Content-Type": "application/json", ...authHeaders(), ...(init?.headers ?? {}) },
     ...init,
   });
   if (!res.ok) {
+    // A 401 means our stored token is no longer valid: drop it so the app
+    // falls back to the anonymous demo session instead of erroring forever.
+    if (res.status === 401 && hadToken) setToken(null);
     let message = `Request failed (${res.status})`;
     try {
       const body = await res.json();
@@ -34,6 +57,39 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(message);
   }
   return (await res.json()) as T;
+}
+
+/* ------------------------------------------------------------------ auth */
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  full_name: string | null;
+  role: string;
+}
+
+export interface AuthResponse {
+  token: string;
+  user: AuthUser;
+}
+
+export interface RegisterInput {
+  email: string;
+  password: string;
+  full_name?: string;
+}
+
+export function login(input: { email: string; password: string }): Promise<AuthResponse> {
+  return apiFetch<AuthResponse>("/auth/login", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function register(input: RegisterInput): Promise<AuthResponse> {
+  return apiFetch<AuthResponse>("/auth/register", { method: "POST", body: JSON.stringify(input) });
+}
+
+/** Current user for the stored bearer token; 401 clears it (see apiFetch). */
+export function getMe(): Promise<{ user: AuthUser }> {
+  return apiFetch("/auth/me");
 }
 
 export function startResearchRun(intakeYear?: number): Promise<ResearchRunOut> {
@@ -47,8 +103,53 @@ export function getRunEvents(runId: string): Promise<ResearchEvents> {
   return apiFetch<ResearchEvents>(`/research/runs/${runId}/events`);
 }
 
-export function getRun(runId: string): Promise<{ status: string; error_message: string | null }> {
+export function getRun(runId: string): Promise<{
+  status: string;
+  error_message: string | null;
+  mode?: "live" | "demo";
+}> {
   return apiFetch(`/research/runs/${runId}`);
+}
+
+/** Instant example run: replays a captured real research run (no credits burned). */
+export function startDemoRun(): Promise<ResearchRunOut> {
+  return apiFetch<ResearchRunOut>("/research/demo", { method: "POST", body: "{}" });
+}
+
+export interface NotificationItem {
+  id: string;
+  type: string;
+  title: string;
+  body: string;
+  link: string | null;
+  read: boolean;
+  email_status: string;
+  created_at: string;
+}
+
+export function listNotifications(): Promise<{
+  items: NotificationItem[];
+  unread_count: number;
+}> {
+  return apiFetch("/notifications");
+}
+
+export function markNotificationRead(id: string): Promise<{ read: boolean }> {
+  return apiFetch(`/notifications/${id}/read`, { method: "POST", body: "{}" });
+}
+
+export function markAllNotificationsRead(): Promise<{ marked: number }> {
+  return apiFetch("/notifications/read-all", { method: "POST", body: "{}" });
+}
+
+/** Fetch a generated PDF (binary — bypasses the JSON apiFetch). */
+export async function exportStrategyPdf(strategyId: string): Promise<Blob> {
+  const res = await fetch(`${API_BASE}/strategies/${strategyId}/export/pdf`, {
+    method: "POST",
+    headers: { ...authHeaders() },
+  });
+  if (!res.ok) throw new Error(`Export failed (${res.status})`);
+  return res.blob();
 }
 
 export interface StrategySummary {
@@ -144,6 +245,7 @@ export interface RequirementItem {
   mandatory: boolean;
   status: string;
   last_verified_at: string | null;
+  evidence_ids?: string[];
 }
 
 export interface ProfileOut {
@@ -185,6 +287,8 @@ export interface Subscription {
   enabled: boolean;
   program_id?: string | null;
   program_name?: string | null;
+  next_check_at?: string | null;
+  last_checked_at?: string | null;
 }
 
 export interface MonitorCheck {
@@ -193,6 +297,7 @@ export interface MonitorCheck {
   material_change: boolean;
   old_value: unknown;
   new_value: unknown;
+  explanation?: string | null;
 }
 
 export interface MonitorChange {
@@ -200,6 +305,9 @@ export interface MonitorChange {
   change_type: string;
   material_change: boolean;
   checked_at: string;
+  old_value?: unknown;
+  new_value?: unknown;
+  explanation?: string | null;
 }
 
 export interface FitItem {
@@ -224,10 +332,30 @@ export function listEvidence(programId?: string): Promise<{ items: EvidenceItem[
   return apiFetch(programId ? `/evidence?program_id=${programId}` : "/evidence");
 }
 
-export function simulateStrategy(
-  strategyId: string,
-  scenario: string
-): Promise<{ counterfactual_run_id?: string; scenario: string; modified_profile?: Record<string, unknown>; error?: string }> {
+export interface PortfolioMove {
+  program_id: string;
+  program_name: string | null;
+  category: string;
+  priority: number;
+}
+
+export interface SimulationResult {
+  counterfactual_run_id?: string;
+  scenario: string;
+  modified_profile?: Record<string, unknown>;
+  portfolio_before?: PortfolioMove[];
+  portfolio_after?: PortfolioMove[];
+  delta?: {
+    moved_up: PortfolioMove[];
+    moved_down: PortfolioMove[];
+    added: PortfolioMove[];
+    removed: PortfolioMove[];
+    summary: string;
+  };
+  error?: string;
+}
+
+export function simulateStrategy(strategyId: string, scenario: string): Promise<SimulationResult> {
   return apiFetch(`/strategies/${strategyId}/simulate`, {
     method: "POST",
     body: JSON.stringify({ scenario }),
@@ -296,4 +424,89 @@ export function checkSubscription(subscriptionId: string): Promise<MonitorCheck>
 
 export function getSubscriptionChanges(subscriptionId: string): Promise<{ items: MonitorChange[] }> {
   return apiFetch(`/monitor/subscriptions/${subscriptionId}/changes`);
+}
+
+export interface DocumentItem {
+  id: string;
+  document_type: string;
+  status: string;
+  expires_at: string | null;
+}
+
+export function listDocuments(): Promise<{ items: DocumentItem[] }> {
+  return apiFetch("/documents");
+}
+
+export function createDocument(
+  documentType: string,
+  notes?: string
+): Promise<{ id: string; document_type: string; status: string }> {
+  return apiFetch("/documents", {
+    method: "POST",
+    body: JSON.stringify({ document_type: documentType, notes }),
+  });
+}
+
+export function updateDocument(
+  id: string,
+  status: string
+): Promise<{ id: string; status: string }> {
+  return apiFetch(`/documents/${id}`, { method: "PATCH", body: JSON.stringify({ status }) });
+}
+
+export interface EvidenceHealth {
+  programs_total: number;
+  programs_with_evidence: number;
+  evidence_total: number;
+  by_status: Record<string, number>;
+  by_confidence: Record<string, number>;
+  stale_count: number;
+}
+
+export function getEvidenceHealth(strategyId: string): Promise<EvidenceHealth> {
+  return apiFetch(`/strategies/${strategyId}/evidence-health`);
+}
+
+export interface OnboardingProgress {
+  completion_percent: number;
+  answered_keys: string[];
+  missing_required_keys: string[];
+}
+
+export function getOnboardingProgress(): Promise<OnboardingProgress> {
+  return apiFetch("/onboarding/progress");
+}
+
+export function saveOnboardingAnswers(
+  answers: Record<string, string>
+): Promise<{ accepted_keys: string[] }> {
+  return apiFetch("/onboarding/answers", {
+    method: "POST",
+    body: JSON.stringify({ answers }),
+  });
+}
+
+export function cancelRun(runId: string): Promise<{ status: string }> {
+  return apiFetch(`/research/runs/${runId}/cancel`, { method: "POST", body: "{}" });
+}
+
+export interface ConflictItem {
+  id: string;
+  reason?: string | null;
+  description?: string | null;
+  conflict_key?: string | null;
+  evidence_ids?: string[];
+  status?: string;
+  resolution_status?: string | null;
+  resolved_at?: string | null;
+}
+
+/** Conflict payload has shipped as both {items:[...]} and {conflicts:[...]} —
+ *  normalize so callers only ever see {items}. */
+export async function getEvidenceConflicts(
+  evidenceId: string
+): Promise<{ items: ConflictItem[] }> {
+  const raw = await apiFetch<Record<string, unknown>>(`/evidence/${evidenceId}/conflicts`);
+  const list = (raw?.items ?? raw?.conflicts ?? []) as ConflictItem[];
+  return { items: Array.isArray(list) ? list : [] };
 }

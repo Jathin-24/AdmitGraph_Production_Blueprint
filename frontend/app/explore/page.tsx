@@ -86,11 +86,11 @@ export default function ExplorePage() {
           body={
             savedOnly
               ? "Save programs from the full list to build your shortlist here."
-              : "Programs appear after a live research run discovers them."
+              : "Programs appear after a research run discovers them — start with the full example."
           }
           action={
             <Link href="/research" className="btn-primary btn-sm">
-              Run live research
+              Run the full example
             </Link>
           }
         />

@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { Term } from "../components/glossary";
 import { ErrorNote, LoadingNote, PageHeader } from "../components/ui";
 import {
   getCompletion,
@@ -28,22 +29,56 @@ const TEXT_FIELDS: { key: EditableKey; label: string; hint: string }[] = [
   { key: "career_goal", label: "Career goal", hint: "e.g. ML engineer in Germany" },
 ];
 
-const FACTS = (p: ProfileOut): [string, string][] => [
-  ["CGPA", p.cgpa ? `${p.cgpa}${p.cgpa_scale ? ` / ${p.cgpa_scale}` : ""}` : "Unknown"],
-  ["Percentage", p.percentage ?? "Unknown"],
-  ["Backlogs", p.backlogs !== null ? String(p.backlogs) : "Unknown"],
-  [
-    "Experience",
-    p.total_experience_months !== null ? `${p.total_experience_months} months` : "Unknown",
-  ],
-  [
-    "Budget",
-    p.total_budget_amount
+const FACTS = (p: ProfileOut): { id: string; label: React.ReactNode; value: string }[] => [
+  {
+    id: "cgpa",
+    label: (
+      <Term term="cgpa">CGPA</Term>
+    ),
+    value: p.cgpa ? `${p.cgpa}${p.cgpa_scale ? ` / ${p.cgpa_scale}` : ""}` : "Unknown",
+  },
+  {
+    id: "percentage",
+    label: (
+      <Term term="cgpa">Percentage</Term>
+    ),
+    value: p.percentage ?? "Unknown",
+  },
+  { id: "backlogs", label: "Backlogs", value: p.backlogs !== null ? String(p.backlogs) : "Unknown" },
+  {
+    id: "experience",
+    label: "Experience",
+    value:
+      p.total_experience_months !== null ? `${p.total_experience_months} months` : "Unknown",
+  },
+  {
+    id: "budget",
+    label: (
+      <Term term="tuition_living">Budget</Term>
+    ),
+    value: p.total_budget_amount
       ? `${p.total_budget_amount} ${p.budget_currency ?? ""}`.trim()
       : "Unknown",
-  ],
-  ["Graduation year", p.graduation_year ? String(p.graduation_year) : "Unknown"],
+  },
+  {
+    id: "graduation_year",
+    label: "Graduation year",
+    value: p.graduation_year ? String(p.graduation_year) : "Unknown",
+  },
 ];
+
+/** Profile completion field → the onboarding step that collects it. */
+const STEP_BY_MISSING_FIELD: Record<string, string> = {
+  field_of_study: "goal",
+  career_goal: "goal",
+  preferred_countries: "goal",
+  target_intakes: "goal",
+  current_degree: "education",
+  institution_name: "education",
+  graduation_year: "education",
+  cgpa: "education",
+  total_budget_amount: "budget",
+};
 
 export default function ProfilePage() {
   const queryClient = useQueryClient();
@@ -109,6 +144,9 @@ export default function ProfilePage() {
   const p: ProfileOut = profile.data!;
   const pct = completion.data?.profile_completion ?? 0;
   const missing = completion.data?.missing_fields ?? [];
+  // Deep-link the guided setup to the step that fills the first missing fact.
+  const missingStep =
+    missing.length > 0 ? STEP_BY_MISSING_FIELD[missing[0]] ?? "goal" : null;
 
   return (
     <main className="mx-auto max-w-3xl space-y-6 px-5 py-8">
@@ -131,7 +169,9 @@ export default function ProfilePage() {
       {/* Completion */}
       <section className="card p-5" aria-label="Profile completion">
         <div className="mb-2 flex items-baseline justify-between">
-          <span className="label">Profile completion</span>
+          <span className="label">
+            <Term term="profile_completion">Profile completion</Term>
+          </span>
           <span className="display text-2xl font-medium tabular-nums text-forest">{pct}%</span>
         </div>
         <div
@@ -145,7 +185,11 @@ export default function ProfilePage() {
         </div>
         {missing.length > 0 && (
           <p className="mt-2 text-xs text-ink-faint">
-            Missing: {missing.join(", ")} — fill these in the guided setup for sharper scoring.
+            Missing: {missing.join(", ")} —{" "}
+            <Link href={`/onboarding?step=${missingStep}`} className="underline hover:text-forest">
+              fill these in the guided setup
+            </Link>{" "}
+            for sharper scoring.
           </p>
         )}
       </section>
@@ -154,15 +198,15 @@ export default function ProfilePage() {
       <section aria-label="Key facts">
         <h2 className="display mb-3 text-lg font-medium">Key facts</h2>
         <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
-          {FACTS(p).map(([label, value]) => (
-            <div key={label} className="card p-3">
-              <p className="text-[11px] uppercase tracking-wide text-ink-faint">{label}</p>
+          {FACTS(p).map((fact) => (
+            <div key={fact.id} className="card p-3">
+              <p className="text-[11px] uppercase tracking-wide text-ink-faint">{fact.label}</p>
               <p
                 className={
-                  value === "Unknown" ? "text-ink-faint" : "font-medium text-ink"
+                  fact.value === "Unknown" ? "text-ink-faint" : "font-medium text-ink"
                 }
               >
-                {value}
+                {fact.value}
               </p>
             </div>
           ))}

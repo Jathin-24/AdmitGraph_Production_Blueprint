@@ -3,10 +3,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import { useState } from "react";
 import {
   ConfidencePill,
   EmptyState,
   ErrorNote,
+  EvidenceStatusChip,
   LoadingNote,
   Section,
   StatusPill,
@@ -15,6 +17,7 @@ import {
 } from "../../components/ui";
 import {
   createSubscription,
+  getEvidenceConflicts,
   getFit,
   getProgram,
   getProgramRequirements,
@@ -88,31 +91,95 @@ function youColumn(category: string, p: ProfileOut | null): string {
   return "Not provided";
 }
 
+function ConflictDetail({ evidenceId }: { evidenceId: string }) {
+  const conflicts = useQuery({
+    queryKey: ["evidence-conflicts", evidenceId],
+    queryFn: () => getEvidenceConflicts(evidenceId),
+  });
+  if (conflicts.isLoading) return <LoadingNote what="Loading conflict details…" />;
+  if (conflicts.isError) {
+    return (
+      <p className="mt-2 text-xs text-ink-faint">
+        Conflict details are unavailable right now — the backend may be restarting.
+      </p>
+    );
+  }
+  const items = conflicts.data?.items ?? [];
+  if (items.length === 0) {
+    return (
+      <p className="mt-2 text-xs text-ink-faint">
+        No conflict record is stored for this claim yet — treat it as unverified until the next
+        research run re-checks it.
+      </p>
+    );
+  }
+  return (
+    <ul className="mt-2 flex flex-col gap-2 rounded-md border border-danger/30 bg-danger-tint p-2.5 text-xs">
+      {items.map((c) => {
+        const others = (c.evidence_ids ?? []).filter((id) => id !== evidenceId);
+        return (
+          <li key={c.id}>
+            <span className="font-medium text-ink">
+              {c.description ?? c.reason ?? "Two sources give different values for this claim."}
+            </span>
+            {c.resolution_status && (
+              <span className="chip chip-neutral ml-2">{c.resolution_status}</span>
+            )}
+            {others.length > 0 && (
+              <span className="mt-0.5 block tabular-nums text-ink-soft">
+                Disagreeing evidence: {others.join(", ")}
+              </span>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function EvidenceRow({ e }: { e: EvidenceItem }) {
+  const [showConflicts, setShowConflicts] = useState(false);
+  return (
+    <li className="py-3 first:pt-0 last:pb-0">
+      <div className="flex flex-wrap items-center gap-2">
+        <ConfidencePill confidence={e.confidence} />
+        <EvidenceStatusChip status={e.status} />
+        <span className="text-[11px] uppercase tracking-wide text-ink-faint">
+          {e.claim_type}
+        </span>
+      </div>
+      <p className="mt-1.5 text-sm text-ink">{e.claim}</p>
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-ink-faint">
+        {e.source_domain && <span>Source: {e.source_domain}</span>}
+        {e.source_authority && <span>Authority: {e.source_authority}</span>}
+        <span>Retrieved: {fmtDate(e.retrieved_at)}</span>
+        {e.freshness_deadline && <span>Fresh until: {fmtDate(e.freshness_deadline)}</span>}
+        {e.source_url && (
+          <a href={e.source_url} target="_blank" rel="noreferrer" className="link">
+            Open source ↗
+          </a>
+        )}
+      </div>
+      {e.status === "CONFLICTING" && (
+        <button
+          type="button"
+          className="link mt-1.5 text-xs text-danger"
+          onClick={() => setShowConflicts((v) => !v)}
+          aria-expanded={showConflicts}
+        >
+          {showConflicts ? "Hide conflict details" : "Show conflict details"}
+        </button>
+      )}
+      {e.status === "CONFLICTING" && showConflicts && <ConflictDetail evidenceId={e.id} />}
+    </li>
+  );
+}
+
 function EvidenceList({ items }: { items: EvidenceItem[] }) {
   return (
     <ul className="flex flex-col divide-y divide-line">
       {items.map((e) => (
-        <li key={e.id} className="py-3 first:pt-0 last:pb-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <ConfidencePill confidence={e.confidence} />
-            <StatusPill status={e.status} />
-            <span className="text-[11px] uppercase tracking-wide text-ink-faint">
-              {e.claim_type}
-            </span>
-          </div>
-          <p className="mt-1.5 text-sm text-ink">{e.claim}</p>
-          <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-ink-faint">
-            {e.source_domain && <span>Source: {e.source_domain}</span>}
-            {e.source_authority && <span>Authority: {e.source_authority}</span>}
-            <span>Retrieved: {fmtDate(e.retrieved_at)}</span>
-            {e.freshness_deadline && <span>Fresh until: {fmtDate(e.freshness_deadline)}</span>}
-            {e.source_url && (
-              <a href={e.source_url} target="_blank" rel="noreferrer" className="link">
-                Open source ↗
-              </a>
-            )}
-          </div>
-        </li>
+        <EvidenceRow key={e.id} e={e} />
       ))}
     </ul>
   );
@@ -122,6 +189,7 @@ export default function ProgramDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
   const queryClient = useQueryClient();
+  const [evidenceFilter, setEvidenceFilter] = useState<string[] | null>(null);
 
   const program = useQuery({ queryKey: ["program", id], queryFn: () => getProgram(id) });
   const requirements = useQuery({
@@ -195,6 +263,7 @@ export default function ProgramDetailPage() {
   const p = program.data!;
   const reqs = requirements.data?.items ?? [];
   const ev = evidence.data?.items ?? [];
+  const filteredEvidence = evidenceFilter ? ev.filter((e) => evidenceFilter.includes(e.id)) : [];
   const fitItem = fit.data?.items.find((f) => f.program_id === id);
   const satisfied = reqs.filter((r) => r.status === "SATISFIED").length;
   const blockers = reqs.filter(
@@ -242,6 +311,19 @@ export default function ProgramDetailPage() {
           </p>
         )}
       </header>
+
+      {/* No plan yet — guide to the example run */}
+      {strategies.isSuccess && (strategies.data?.items ?? []).length === 0 && (
+        <div className="card flex flex-wrap items-center justify-between gap-3 p-4">
+          <p className="max-w-2xl text-sm text-ink-soft">
+            You don&apos;t have a plan yet. Run the full example to build a portfolio and see how
+            this program fits your profile.
+          </p>
+          <Link href="/research" className="btn-primary btn-sm">
+            Run the full example
+          </Link>
+        </div>
+      )}
 
       {/* 1. Overview */}
       <Section index="01" title="Overview">
@@ -316,6 +398,9 @@ export default function ProgramDetailPage() {
                   (e) => e.normalized_claim && cat.keys.includes(e.normalized_claim)
                 );
                 const confidences = Array.from(new Set(catEv.map((e) => e.confidence)));
+                const reqEvIds = Array.from(
+                  new Set(catReqs.flatMap((r) => r.evidence_ids ?? []))
+                );
                 return (
                   <tr key={cat.label}>
                     <td className="font-medium text-ink">{cat.label}</td>
@@ -329,9 +414,20 @@ export default function ProgramDetailPage() {
                       <span className={`chip ${spec.cls}`}>{spec.label}</span>
                     </td>
                     <td className="text-xs text-ink-faint">
-                      {catEv.length > 0
-                        ? `${catEv.length} claim${catEv.length > 1 ? "s" : ""} (${confidences.join(", ")})`
-                        : "—"}
+                      {reqEvIds.length > 0 ? (
+                        <button
+                          type="button"
+                          className="link"
+                          onClick={() => setEvidenceFilter(reqEvIds)}
+                          aria-expanded={evidenceFilter !== null}
+                        >
+                          {reqEvIds.length} source{reqEvIds.length > 1 ? "s" : ""}
+                        </button>
+                      ) : catEv.length > 0 ? (
+                        `${catEv.length} claim${catEv.length > 1 ? "s" : ""} (${confidences.join(", ")})`
+                      ) : (
+                        "—"
+                      )}
                     </td>
                   </tr>
                 );
@@ -339,6 +435,32 @@ export default function ProgramDetailPage() {
             </tbody>
           </table>
         </div>
+
+        {evidenceFilter && (
+          <div className="card mt-3 p-4" role="region" aria-label="Sources for this area">
+            <div className="mb-3 flex items-center justify-between border-b border-line pb-2">
+              <h3 className="display text-base font-medium">
+                {evidenceFilter.length} sourced claim{evidenceFilter.length > 1 ? "s" : ""}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEvidenceFilter(null)}
+                aria-label="Close sources"
+                className="btn-ghost btn-sm"
+              >
+                Close
+              </button>
+            </div>
+            {filteredEvidence.length > 0 ? (
+              <EvidenceList items={filteredEvidence} />
+            ) : (
+              <p className="text-sm text-ink-faint">
+                These specific sources are not loaded on this page — see the Evidence section
+                below for every claim we hold for this program.
+              </p>
+            )}
+          </div>
+        )}
       </Section>
 
       {/* 4. Risks */}
@@ -449,10 +571,10 @@ export default function ProgramDetailPage() {
         {ev.length === 0 ? (
           <EmptyState
             title="No evidence yet"
-            body="Claims for this program appear after a live research run."
+            body="Claims for this program appear after a research run — start with the full example."
             action={
               <Link href="/research" className="btn-primary btn-sm">
-                Run research
+                Run the full example
               </Link>
             }
           />
