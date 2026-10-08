@@ -346,6 +346,7 @@ CREATE TABLE fit_assessments (
   overall_score NUMERIC(5,2) NOT NULL,
   scoring_version TEXT NOT NULL,
   explanation TEXT,
+  profile_snapshot JSONB NOT NULL DEFAULT '{}',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -380,6 +381,7 @@ CREATE TABLE risks (
   fit_assessment_id UUID REFERENCES fit_assessments(id) ON DELETE CASCADE,
   profile_id UUID NOT NULL REFERENCES student_profiles(id) ON DELETE CASCADE,
   program_id UUID REFERENCES programs(id) ON DELETE CASCADE,
+  requirement_id UUID REFERENCES requirements(id) ON DELETE SET NULL,
   risk_type TEXT NOT NULL,
   severity risk_severity NOT NULL,
   title TEXT NOT NULL,
@@ -419,6 +421,7 @@ CREATE TABLE application_plans (
   priority INTEGER NOT NULL,
   fit_assessment_id UUID REFERENCES fit_assessments(id),
   rationale TEXT NOT NULL,
+  reasons JSONB NOT NULL DEFAULT '[]',
   estimated_cost JSONB NOT NULL DEFAULT '{}',
   next_deadline DATE,
   next_action TEXT,

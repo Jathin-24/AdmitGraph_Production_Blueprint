@@ -524,6 +524,9 @@ class FitAssessment(Base):
     overall_score: Mapped[Decimal] = mapped_column(Numeric(5, 2))
     scoring_version: Mapped[str] = mapped_column(Text)
     explanation: Mapped[str | None] = mapped_column(Text)
+    # Recalculation snapshot: requirement values/statuses, dimension inputs,
+    # weights and scoring_version used for this score ({} on legacy rows).
+    profile_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default="{}")
     created_at: Mapped[datetime] = _ts()
 
 
@@ -573,6 +576,11 @@ class Risk(Base):
     )
     profile_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("student_profiles.id", ondelete="CASCADE"))
     program_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("programs.id", ondelete="CASCADE"))
+    # The eligibility entry that raised this risk (NULL for global risks:
+    # financial, document readiness, cross-portfolio freshness/conflicts).
+    requirement_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("requirements.id", ondelete="SET NULL")
+    )
     risk_type: Mapped[str] = mapped_column(Text)
     severity: Mapped[RiskSeverity] = mapped_column(
         Enum(RiskSeverity, name="risk_severity", create_type=False)
@@ -627,6 +635,8 @@ class ApplicationPlan(Base):
     priority: Mapped[int] = mapped_column(Integer)
     fit_assessment_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("fit_assessments.id"))
     rationale: Mapped[str] = mapped_column(Text)
+    # Top dimension reasons for the card, e.g. ["Academic 42/100", "Language 25/100"].
+    reasons: Mapped[list[Any]] = mapped_column(JSONB, server_default="[]")
     estimated_cost: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default="{}")
     next_deadline: Mapped[date | None] = mapped_column(Date)
     next_action: Mapped[str | None] = mapped_column(Text)
