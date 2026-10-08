@@ -1,4 +1,10 @@
-"""Admin/observability endpoints. Never expose provider credentials."""
+"""Admin/observability endpoints. Never expose provider credentials.
+
+All routes are gated by `require_admin_access` (router-level dependency):
+authenticated callers must carry the ADMIN role; anonymous callers are judged
+by the local demo user's role in the DB (ADMIN locally → the demo stays usable,
+a STUDENT demo role revokes anonymous access in one UPDATE).
+"""
 
 from __future__ import annotations
 
@@ -8,10 +14,28 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import AppError
+from app.core.security import current_user_role
 from app.db.models import ResearchPlan, ResearchPlanStep, RunStatus, SearchRun
 from app.db.session import get_session
+from app.services.profile import get_or_create_default_user
 
-router = APIRouter(tags=["admin"])
+
+async def require_admin_access(session: AsyncSession = Depends(get_session)) -> None:
+    """403 unless the caller may use admin routes (see module docstring)."""
+    role = current_user_role()
+    if role is not None:
+        # Authenticated: role comes straight from the verified bearer token.
+        if role != "ADMIN":
+            raise AppError(403, "FORBIDDEN", "Administrator access required")
+        return
+    # Anonymous: consult the local demo user's stored role (per-request only).
+    demo = await get_or_create_default_user(session)
+    if str(demo.role) != "ADMIN":
+        raise AppError(403, "FORBIDDEN", "Administrator access required")
+
+
+router = APIRouter(tags=["admin"], dependencies=[Depends(require_admin_access)])
 
 
 @router.get("/admin/search-usage")
