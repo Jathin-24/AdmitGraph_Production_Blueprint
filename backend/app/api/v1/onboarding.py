@@ -1,8 +1,6 @@
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import ProfilePreference, TestScore
 from app.db.session import get_session
 from app.schemas.onboarding import (
     OnboardingAnswersIn,
@@ -10,7 +8,6 @@ from app.schemas.onboarding import (
     OnboardingSchema,
 )
 from app.services import onboarding as onboarding_service
-from app.services.profile import TRACKED_FIELDS, get_or_create_profile
 
 router = APIRouter(tags=["onboarding"])
 
@@ -30,24 +27,13 @@ async def answers(
 
 @router.get("/onboarding/progress", response_model=OnboardingProgressOut)
 async def progress(session: AsyncSession = Depends(get_session)) -> OnboardingProgressOut:
-    profile = await get_or_create_profile(session)
-    filled = {f for f in TRACKED_FIELDS if getattr(profile, f) not in (None, "")}
-    result = await session.execute(
-        select(ProfilePreference).where(ProfilePreference.profile_id == profile.id)
-    )
-    prefs = result.scalar_one()
-    if prefs.preferred_countries:
-        filled.add("preferred_countries")
-    if prefs.target_intakes:
-        filled.add("target_intakes")
-    english = await session.execute(
-        select(TestScore).where(
-            TestScore.profile_id == profile.id,
-            TestScore.test_type == onboarding_service.ENGLISH_TEST_TYPE,
-        )
-    )
-    if english.scalar_one_or_none() is not None:
-        filled.add("english_test_overall")
+    """Completion for the current profile.
+
+    REQUIRED_KEYS (the four original questions: goal/education/tests/budget)
+    still decide `missing_required_keys`; optional answers only ever raise
+    `completion_percent`.
+    """
+    filled = await onboarding_service.answered_from_db(session)
     answered = sorted(filled)
     missing_required = sorted(onboarding_service.REQUIRED_KEYS - filled)
     total = len(onboarding_service.REQUIRED_KEYS | filled)

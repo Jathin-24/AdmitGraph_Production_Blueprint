@@ -13,7 +13,11 @@ import pytest
 from sqlalchemy import select
 
 from app.core.errors import AppError
-from app.db.models import ProfilePreference, TestScore
+from app.db.models import ProfilePreference
+
+# Aliased: pytest must not try to collect the SQLAlchemy model `TestScore` as a
+# test class ("cannot collect test class 'TestScore' because it has a __init__").
+from app.db.models import TestScore as StudentTestScore
 from app.services.onboarding import apply_answers
 from app.services.profile import get_or_create_profile
 
@@ -53,7 +57,7 @@ async def test_apply_answers_coerces_form_strings_to_column_types(
 
     score = (
         await db_session.execute(
-            select(TestScore).where(TestScore.profile_id == profile.id)
+            select(StudentTestScore).where(StudentTestScore.profile_id == profile.id)
         )
     ).scalars().first()
     assert score is not None
@@ -64,7 +68,7 @@ async def test_apply_answers_coerces_form_strings_to_column_types(
     await apply_answers(db_session, {"english_test_overall": "7.0"})
     scores = (
         await db_session.execute(
-            select(TestScore).where(TestScore.profile_id == profile.id)
+            select(StudentTestScore).where(StudentTestScore.profile_id == profile.id)
         )
     ).scalars().all()
     assert len(scores) == 1

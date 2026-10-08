@@ -7,8 +7,10 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import ProfilePreference, StudentProfile, User
+from app.db.models import ProfilePreference, StudentProfile, User, UserRole
 from app.schemas.profile import ProfileCreate, ProfileUpdate, ValidationIssue, ValidationOut
+
+DEMO_EMAIL = "demo@admitgraph.local"
 
 TRACKED_FIELDS = [
     "current_degree",
@@ -22,12 +24,32 @@ TRACKED_FIELDS = [
 
 
 async def get_or_create_default_user(session: AsyncSession) -> User:
-    """MVP stand-in for OAuth: single local student user. Documented in ENVIRONMENT.md."""
+    """Resolve the requesting user: authenticated (ContextVar) or local demo user.
+
+    The auth middleware decodes the bearer token into a ContextVar once per
+    request; with no token (or in direct service calls/tests) the stable local
+    demo user is used. Anonymous traffic always maps to the dedicated demo
+    account — never to whichever real account happened to register first —
+    so signed-out sessions cannot read a student's data.
+    Documented in deployment/ENVIRONMENT.md.
+    """
+    from app.core.security import current_user_id
+
+    uid = current_user_id()
+    if uid is not None:
+        user = await session.get(User, uid)
+        if user is not None:
+            return user
+    result = await session.execute(select(User).where(User.email == DEMO_EMAIL))
+    demo = result.scalar_one_or_none()
+    if demo is not None:
+        return demo
     result = await session.execute(select(User).order_by(User.created_at).limit(1))
     user = result.scalar_one_or_none()
     if user is not None:
         return user
-    user = User(email="demo@admitgraph.local", full_name="Demo Student")
+    # Fresh database: bootstrap the local demo account (passwordless, admin).
+    user = User(email=DEMO_EMAIL, full_name="Demo Student", role=UserRole.ADMIN)
     session.add(user)
     await session.flush()
     return user
