@@ -73,6 +73,19 @@ async def get_evidence(
     }
 
 
+@router.post("/evidence/{evidence_id}/recheck")
+async def recheck_evidence(
+    evidence_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+) -> dict[str, Any]:
+    """Bounded fresh re-check of one claim (1 search + extraction).
+
+    409 PROVIDER_UNAVAILABLE when SERPAPI_API_KEY is not configured.
+    """
+    from app.services.evidence.recheck import recheck_evidence as run_recheck
+
+    return await run_recheck(session, evidence_id)
+
+
 @router.get("/evidence/{evidence_id}/conflicts")
 async def get_conflicts(
     evidence_id: uuid.UUID, session: AsyncSession = Depends(get_session)

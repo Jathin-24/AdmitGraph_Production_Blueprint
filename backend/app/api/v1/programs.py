@@ -123,6 +123,20 @@ async def get_program_requirements(
             .order_by(Requirement.normalized_key)
         )
     ).scalars().all()
+    # Best-effort evidence join: evidence for this program sharing the
+    # requirement's normalized key (MASTER_SPEC §7: requirements carry refs).
+    evidence_rows = (
+        await session.execute(
+            select(Evidence.normalized_claim, Evidence.id).where(
+                Evidence.subject_type == "program",
+                Evidence.subject_id == program_id,
+                Evidence.normalized_claim.is_not(None),
+            )
+        )
+    ).all()
+    evidence_by_key: dict[str, list[str]] = {}
+    for key, evidence_id in evidence_rows:
+        evidence_by_key.setdefault(str(key), []).append(str(evidence_id))
     return {
         "items": [
             {
@@ -135,6 +149,7 @@ async def get_program_requirements(
                 "mandatory": r.mandatory,
                 "status": r.status.value,
                 "last_verified_at": r.last_verified_at.isoformat() if r.last_verified_at else None,
+                "evidence_ids": evidence_by_key.get(r.normalized_key, []),
             }
             for r in rows
         ]

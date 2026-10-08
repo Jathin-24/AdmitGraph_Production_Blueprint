@@ -15,6 +15,7 @@ from tenacity import (
 )
 
 from app.core.config import Settings
+from app.services.serpapi.cache import SearchCache
 
 SERPAPI_ENDPOINT = "https://serpapi.com/search"
 
@@ -63,9 +64,17 @@ class SerpApiResult:
 
 
 class SerpApiClient:
-    def __init__(self, settings: Settings, http_client: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        http_client: httpx.AsyncClient | None = None,
+        cache: SearchCache | None = None,
+    ) -> None:
         self._settings = settings
         self._http = http_client
+        # Redis-with-fallback cache (serpapi_docs rule 9). Optional: callers may
+        # pass their own, and tests may pass a plain dict via search(cache=...).
+        self._cache = cache
 
     async def _get_http(self) -> httpx.AsyncClient:
         if self._http is None:
@@ -83,28 +92,27 @@ class SerpApiClient:
         *,
         parameters: dict[str, Any] | None = None,
         cache: dict[str, dict[str, Any]] | None = None,
+        locale: dict[str, Any] | None = None,
     ) -> SerpApiResult:
         if engine not in SUPPORTED_ENGINES:
             raise SerpApiError("UNSUPPORTED_ENGINE", f"Engine '{engine}' is not supported")
         if not q or not q.strip():
             raise SerpApiError("VALIDATION_ERROR", "Query 'q' is required")
         params: dict[str, Any] = {"engine": engine, "q": q, "output": "json", **(parameters or {})}
+        if locale:
+            # Localization (SerpApi hl/gl/location/google_domain) rides on the
+            # request but NOT on the cache key: presentation hints must not
+            # fragment the warm 6h cache — cache hits are the budget control.
+            params.update(locale)
 
         key = self.cache_key(engine, {"q": q, **(parameters or {})})
         if cache is not None and key in cache:
             cached = cache[key]
-            return SerpApiResult(
-                engine=engine,
-                query=q,
-                parameters=params,
-                raw=cached,
-                organic_results=cached.get("organic_results", []),
-                news_results=cached.get("news_results", []),
-                jobs_results=cached.get("jobs_results", []),
-                search_metadata=cached.get("search_metadata", {}),
-                search_id=cached.get("search_metadata", {}).get("id"),
-                cache_hit=True,
-            )
+            return self._result_from_payload(engine, q, params, cached, cache_hit=True)
+        if self._cache is not None:
+            adapter_hit = await self._cache.get(key)
+            if adapter_hit is not None:
+                return self._result_from_payload(engine, q, params, adapter_hit, cache_hit=True)
 
         started = time.perf_counter()
         try:
@@ -114,6 +122,8 @@ class SerpApiClient:
         duration_ms = int((time.perf_counter() - started) * 1000)
         if cache is not None:
             cache[key] = payload
+        if self._cache is not None:
+            await self._cache.set(key, payload)
         metadata = payload.get("search_metadata", {})
         return SerpApiResult(
             engine=engine,
@@ -126,6 +136,29 @@ class SerpApiClient:
             search_metadata=metadata,
             search_id=metadata.get("id"),
             duration_ms=duration_ms,
+        )
+
+    @staticmethod
+    def _result_from_payload(
+        engine: str,
+        q: str,
+        params: dict[str, Any],
+        cached: dict[str, Any],
+        *,
+        cache_hit: bool,
+    ) -> SerpApiResult:
+        metadata = cached.get("search_metadata", {})
+        return SerpApiResult(
+            engine=engine,
+            query=q,
+            parameters=params,
+            raw=cached,
+            organic_results=cached.get("organic_results", []),
+            news_results=cached.get("news_results", []),
+            jobs_results=cached.get("jobs_results", []),
+            search_metadata=metadata,
+            search_id=metadata.get("id"),
+            cache_hit=cache_hit,
         )
 
     async def google(

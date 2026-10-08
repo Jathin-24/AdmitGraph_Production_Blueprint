@@ -55,12 +55,22 @@ async def create_run(
     return ResearchPlanOut(research_plan_id=plan.id, status=plan.status.value)
 
 
+@router.post("/research/demo", response_model=ResearchPlanOut)
+async def create_demo_run(session: AsyncSession = Depends(get_session)) -> ResearchPlanOut:
+    """Replay the captured example run for this participant (no search/LLM spend)."""
+    from app.services.demo.runner import start_demo_run
+
+    plan = await start_demo_run(session)
+    return ResearchPlanOut(research_plan_id=plan.id, status=plan.status.value)
+
+
 @router.get("/research/runs/{run_id}", response_model=ResearchPlanDetail)
 async def get_run(run_id: uuid.UUID, session: AsyncSession = Depends(get_session)) -> ResearchPlanDetail:
     plan = await _get_plan_or_404(session, run_id)
     return ResearchPlanDetail(
         id=plan.id,
         status=plan.status.value,
+        mode=plan.mode if plan.mode in ("live", "demo") else "live",
         planned_queries=[
             q["q"] if isinstance(q, dict) else str(q) for q in (plan.planned_queries or [])
         ],

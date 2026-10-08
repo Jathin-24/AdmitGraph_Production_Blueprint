@@ -1,4 +1,10 @@
-"""Conflict detection over normalized claim values. Never silently picks a winner."""
+"""Conflict detection over normalized claim values. Never silently picks a winner.
+
+Policy (MASTER_SPEC §11): conflicting sources are kept (never overwritten),
+flagged CONFLICTING, confidence downgraded, and surfaced as conflicts the user
+must verify. Detection is idempotent: re-running the pipeline re-uses an
+existing UNRESOLVED conflict group instead of duplicating rows.
+"""
 
 from __future__ import annotations
 
@@ -54,16 +60,40 @@ class ConflictDetectionService:
             span = rows_sorted[-1].retrieved_at - rows_sorted[0].retrieved_at
             if span > timedelta(days=180):
                 continue
-            conflict = EvidenceConflict(
-                conflict_key=f"{subject_type}:{subject_id}:{key}",
-                description=f"Conflicting values for '{key}' across {len(rows)} sources",
-            )
-            session.add(conflict)
-            await session.flush()
+            conflict_key = f"{subject_type}:{subject_id}:{key}"
+            # Idempotent: one UNRESOLVED group per conflict key.
+            existing = (
+                await session.execute(
+                    select(EvidenceConflict).where(
+                        EvidenceConflict.conflict_key == conflict_key,
+                        EvidenceConflict.resolution_status == "UNRESOLVED",
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                conflict = existing
+            else:
+                conflict = EvidenceConflict(
+                    conflict_key=conflict_key,
+                    description=f"Conflicting values for '{key}' across {len(rows)} sources",
+                )
+                session.add(conflict)
+                await session.flush()
             for row in rows:
-                session.add(EvidenceConflictMember(conflict_id=conflict.id, evidence_id=row.id))
+                member = (
+                    await session.execute(
+                        select(EvidenceConflictMember).where(
+                            EvidenceConflictMember.conflict_id == conflict.id,
+                            EvidenceConflictMember.evidence_id == row.id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if member is None:
+                    session.add(EvidenceConflictMember(conflict_id=conflict.id, evidence_id=row.id))
+                # Keep both claims; flag + downgrade confidence (never a winner).
                 row.status = EvidenceStatus.CONFLICTING
                 row.confidence = ConfidenceLevel.LOW
+                row.conflict_group_id = conflict.id
             conflicts.append(conflict)
         await session.commit()
         return conflicts

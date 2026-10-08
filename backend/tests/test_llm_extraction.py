@@ -50,6 +50,38 @@ async def test_extraction_skips_when_no_text() -> None:
     assert out is None
 
 
+@pytest.mark.asyncio
+async def test_extraction_preserves_program_profile() -> None:
+    """The claim-truncation path must not drop the optional program_profile —
+    it is the model's only route to Program enrichment."""
+
+    class _ProfileProvider:
+        async def generate_structured(self, input, schema, model_config=None):  # noqa: ANN001
+            return schema.model_validate(
+                {
+                    "claims": [
+                        {
+                            "claim_type": "academic",
+                            "normalized_key": "cgpa_min",
+                            "value": {"min": 3.0},
+                            "claim": "Page states CGPA 3.0 minimum.",
+                            "confidence": "HIGH",
+                        }
+                    ],
+                    "program_profile": {"degree_type": "M.Sc.", "language": "English"},
+                }
+            )
+
+    out = await extract_claims(
+        _ProfileProvider(), title="MSc AI", snippet="M.Sc. taught in English, CGPA 3.0", domain="uni.example"
+    )
+    assert out is not None
+    assert out.program_profile is not None
+    assert out.program_profile.degree_type == "M.Sc."
+    assert out.program_profile.language == "English"
+    assert len(out.claims) == 1
+
+
 def test_known_keys_have_requirement_mapping() -> None:
     from app.services.evidence.llm_extract import KEY_OPERATOR, KEY_TO_REQUIREMENT_TYPE
 

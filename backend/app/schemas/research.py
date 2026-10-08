@@ -23,6 +23,7 @@ class ResearchRunCreate(BaseModel):
 class ResearchPlanDetail(BaseModel):
     id: UUID
     status: str
+    mode: str  # "live" | "demo" — always present so the UI can badge replays
     planned_queries: list[Any]
     error_message: str | None
     created_at: datetime
