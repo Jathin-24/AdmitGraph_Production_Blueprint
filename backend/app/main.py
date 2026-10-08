@@ -3,6 +3,7 @@ import sys
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -14,10 +15,12 @@ from fastapi.responses import JSONResponse
 
 from app.api.v1 import (
     admin,
+    auth,
     documents,
     evidence,
     health,
     monitor,
+    notifications,
     onboarding,
     profile,
     programs,
@@ -28,26 +31,35 @@ from app.core.config import get_settings
 from app.core.errors import (
     AppError,
     app_error_handler,
+    error_payload,
     unhandled_error_handler,
     validation_error_handler,
 )
 from app.core.logging import configure_logging
+from app.core.security import bearer_token, decode_token, reset_request_user, set_request_user
 
 configure_logging()
 settings = get_settings()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):  # type: ignore[no-untyped-def]
+    """Start/stop background workers with the app process."""
+    from app.workers import scheduler
+
+    await scheduler.start()
+    try:
+        yield
+    finally:
+        await scheduler.stop()
+
 
 app = FastAPI(
     title="AdmitGraph API",
     version="0.1.0",
     openapi_url="/api/v1/openapi.json",
     docs_url="/api/v1/docs",
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origin_list,
-    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "Idempotency-Key", "X-Request-ID"],
+    lifespan=lifespan,
 )
 
 app.add_exception_handler(AppError, app_error_handler)  # type: ignore[arg-type]
@@ -80,7 +92,14 @@ async def body_size_and_rate_limit(
                 },
             )
     if (
-        request.url.path in ("/api/v1/research/runs", "/api/v1/monitor/subscriptions")
+        request.url.path
+        in (
+            "/api/v1/research/runs",
+            "/api/v1/research/demo",
+            "/api/v1/monitor/subscriptions",
+            "/api/v1/auth/login",
+            "/api/v1/auth/register",
+        )
         and request.method == "POST"
     ):
         key = request.client.host if request.client else "unknown"
@@ -106,6 +125,37 @@ async def body_size_and_rate_limit(
 
 
 @app.middleware("http")
+async def auth_context_middleware(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    """Decode bearer token into request ContextVars (see app/core/security.py).
+
+    No token → anonymous/demo user. Invalid/expired token → 401 so clients
+    drop the stale session instead of silently writing to the wrong user.
+    """
+    token = bearer_token(request.headers.get("Authorization"))
+    tokens: tuple[object, object] | None = None
+    if token is not None:
+        claims = decode_token(token)
+        if claims is None:
+            return JSONResponse(
+                status_code=401,
+                content=error_payload(
+                    "UNAUTHENTICATED",
+                    "Invalid or expired token",
+                    {},
+                    getattr(request.state, "request_id", ""),
+                ),
+            )
+        tokens = set_request_user(uuid.UUID(claims["sub"]), claims["role"])
+    try:
+        return await call_next(request)
+    finally:
+        if tokens is not None:
+            reset_request_user(tokens)  # type: ignore[arg-type]
+
+
+@app.middleware("http")
 async def request_id_middleware(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]
 ) -> Response:
@@ -119,6 +169,15 @@ async def request_id_middleware(
     return response
 
 
+# CORS is added LAST so it is the OUTERMOST middleware: every response,
+# including auth 401s and rate-limit 429s, carries CORS headers.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origin_list,
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "Idempotency-Key", "X-Request-ID"],
+)
+
 app.include_router(health.router, prefix="/api/v1")
 app.include_router(profile.router, prefix="/api/v1")
 app.include_router(onboarding.router, prefix="/api/v1")
@@ -129,3 +188,5 @@ app.include_router(strategies.router, prefix="/api/v1")
 app.include_router(documents.router, prefix="/api/v1")
 app.include_router(programs.router, prefix="/api/v1")
 app.include_router(admin.router, prefix="/api/v1")
+app.include_router(auth.router, prefix="/api/v1")
+app.include_router(notifications.router, prefix="/api/v1")
