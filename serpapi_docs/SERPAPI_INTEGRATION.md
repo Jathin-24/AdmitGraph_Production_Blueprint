@@ -67,18 +67,29 @@ P2:
 Use generated queries, not hard-coded Germany-only queries.
 
 Requirements:
-`site:{official_domain} {program} admission requirements {intake_year}`
-`site:{official_domain} {program} IELTS TOEFL language requirements`
-`site:{official_domain} {program} prerequisites credits modules`
-`site:{official_domain} {program} application deadline {intake_year}`
-`site:{official_domain} {program} tuition fees`
+`site:{official_domain} "{program}" admission requirements`
+`site:{official_domain} "{program}" IELTS TOEFL language requirements`
+`site:{official_domain} "{program}" prerequisites credits modules`
+`site:{official_domain} "{program}" application deadline`
+`site:{official_domain} "{program}" tuition fees`
+
+The program title is quoted and `{intake_year}` is omitted from `site:`
+templates: live probes confirmed Google silently drops the `site:`
+restriction on loose multi-term queries, while a quoted title keeps it
+(the year was the term correlated with the drop). The year is appended
+only to non-site fallbacks.
 
 Country policy:
 `{country} international student visa financial proof official`
 `site:{official_government_domain} student visa financial proof`
 
 Scholarships:
-`site:{official_domain} international students scholarship {program/country}`
+`site:{official_domain} international students scholarship`
+`{country} international students scholarship {field}` (non-site fallback)
+
+Note: quoting the program title inside the funding query made Google return
+0 results (observed live), so the site-scoped funding query names only the
+domain — the funding bucket binds back to the program by domain.
 
 Career:
 `{field} jobs {city} {country}`
@@ -88,6 +99,19 @@ News:
 `{country} student visa policy international students`
 `{university} tuition international students`
 `{university} admissions policy {program}`
+
+## Localization
+Every request carries SerpApi's localization parameters (per the "Easy
+Integration" docs), derived from the profile's primary preferred country:
+
+- `hl=en` (product language)
+- `gl={profile country code}` (`us` fallback)
+- `location={profile country name}` — known countries only; unknown strings
+  are omitted because SerpApi rejects them
+- `google_domain=google.com`
+
+They are sent on the wire but excluded from the cache key, so the warm
+6-hour cache is never fragmented by locale (search budget rule).
 
 ## Result classification
 Classify domains using:
