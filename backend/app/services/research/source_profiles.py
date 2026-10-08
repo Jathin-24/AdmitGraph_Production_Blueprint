@@ -14,6 +14,28 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.db.models import Source, SourceAuthority
+
+# Authorities whose domain is an official channel (university, government,
+# recognized organization/accredited body). Used for evidence confidence: an
+# official-domain source earns HIGH, everything else MEDIUM — never LOW, and
+# never HIGH for a source we cannot place.
+OFFICIAL_AUTHORITIES: frozenset[SourceAuthority] = frozenset(
+    {
+        SourceAuthority.OFFICIAL_UNIVERSITY,
+        SourceAuthority.OFFICIAL_GOVERNMENT,
+        SourceAuthority.OFFICIAL_ORGANIZATION,
+        SourceAuthority.ACCREDITED_BODY,
+    }
+)
+
+
+def is_official_source(source: Source | None) -> bool:
+    """True when the stored source's domain classified as an official channel."""
+    if source is None:
+        return False
+    return source.source_authority in OFFICIAL_AUTHORITIES
+
 
 @dataclass(frozen=True)
 class OfficialPortals:

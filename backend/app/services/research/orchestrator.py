@@ -619,9 +619,14 @@ class ResearchService:
             )
             domains = {str(d) for d in domain_rows.all() if d}
 
-        from app.services.research.career import career_summary
-        from app.services.research.policy import policy_summary
+        from app.services.research.career import career_summary, record_career_evidence
+        from app.services.research.policy import policy_summary, record_policy_evidence
 
+        # Career/policy signals become first-class evidence rows (claim types
+        # "career"/"policy", evidence-only keys) right here in the discovery
+        # step, so the scoring dimensions can consult them instead of always
+        # answering UNKNOWN. Both recorders read STORED rows only — provider
+        # errors and zero results simply yield honest zeros.
         output: dict[str, Any] = {
             "searches": results,
             "searches_run": searches_run,
@@ -632,8 +637,14 @@ class ResearchService:
             "official_site_query": official_site_query,
             "discovery_budget": MAX_DISCOVERY_QUERIES,
             "circuit_state": self._circuit.state,
-            "career": career_summary(results),
-            "policy": policy_summary(results),
+            "career": {
+                **career_summary(results),
+                **await record_career_evidence(session, search_run_ids=run_ids),
+            },
+            "policy": {
+                **policy_summary(results),
+                **await record_policy_evidence(session, search_run_ids=run_ids),
+            },
         }
         if not self._circuit.allow():
             # serpapi_docs rule 15: provider failing -> complete discovery from
@@ -1367,14 +1378,20 @@ _background_tasks: set[asyncio.Task[None]] = set()
 
 
 def dispatch_plan(plan_id: uuid.UUID) -> None:
-    service = ResearchService()
-    task = asyncio.create_task(service.execute_plan(plan_id))
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+    from app.core.runcontext import run_id_scope
 
-    def _finished(t: asyncio.Task[None]) -> None:
-        from app.core.events import emit  # local: keeps orchestrator import-light
+    # Bind run_id BEFORE create_task: the Task copies the current context, so
+    # every orchestrator log line inside the run carries run_id
+    # (BACKEND_SPEC §Reliability "structured logs with request_id and run_id").
+    with run_id_scope(str(plan_id)):
+        service = ResearchService()
+        task = asyncio.create_task(service.execute_plan(plan_id))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
 
-        emit("research.run_finished", plan_id=plan_id, task=t)
+        def _finished(t: asyncio.Task[None]) -> None:
+            from app.core.events import emit  # local: keeps orchestrator import-light
 
-    task.add_done_callback(_finished)
+            emit("research.run_finished", plan_id=plan_id, task=t)
+
+        task.add_done_callback(_finished)

@@ -1,30 +1,31 @@
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError
-from app.db.models import Evidence, EvidenceConflict, EvidenceConflictMember, Source
+from app.db.models import Evidence
+from app.db.repositories import evidence as evidence_repo
 from app.db.session import get_session
 
 router = APIRouter(tags=["evidence"])
+
+
+class ResolveConflictIn(BaseModel):
+    """Optional body: resolve without a body to accept the default preference."""
+
+    preferred_evidence_id: uuid.UUID | None = None
+    reason: str | None = None
 
 
 @router.get("/evidence")
 async def list_evidence(
     program_id: uuid.UUID | None = None, session: AsyncSession = Depends(get_session)
 ) -> dict[str, Any]:
-    query = (
-        select(Evidence, Source)
-        .join(Source, Evidence.source_id == Source.id, isouter=True)
-        .order_by(Evidence.retrieved_at.desc())
-        .limit(50)
-    )
-    if program_id is not None:
-        query = query.where(Evidence.subject_type == "program", Evidence.subject_id == program_id)
-    rows = (await session.execute(query)).all()
+    rows = await evidence_repo.list_evidence(session, program_id)
     return {
         "items": [
             {
@@ -52,7 +53,7 @@ async def list_evidence(
 async def get_evidence(
     evidence_id: uuid.UUID, session: AsyncSession = Depends(get_session)
 ) -> dict[str, Any]:
-    row = await session.get(Evidence, evidence_id)
+    row = await evidence_repo.get_evidence(session, evidence_id)
     if row is None:
         raise AppError(404, "NOT_FOUND", "Evidence not found")
     return {
@@ -90,12 +91,7 @@ async def recheck_evidence(
 async def get_conflicts(
     evidence_id: uuid.UUID, session: AsyncSession = Depends(get_session)
 ) -> dict[str, Any]:
-    result = await session.execute(
-        select(EvidenceConflict)
-        .join(EvidenceConflictMember, EvidenceConflictMember.conflict_id == EvidenceConflict.id)
-        .where(EvidenceConflictMember.evidence_id == evidence_id)
-    )
-    conflicts = result.scalars().all()
+    conflicts = await evidence_repo.list_conflicts(session, evidence_id)
     return {
         "evidence_id": str(evidence_id),
         "conflicts": [
@@ -104,8 +100,72 @@ async def get_conflicts(
                 "conflict_key": c.conflict_key,
                 "description": c.description,
                 "resolution_status": c.resolution_status,
+                "preferred_evidence_id": str(c.preferred_evidence_id) if c.preferred_evidence_id else None,
+                "resolution_reason": c.resolution_reason,
                 "resolved_at": c.resolved_at.isoformat() if c.resolved_at else None,
             }
             for c in conflicts
         ],
+    }
+
+
+@router.post("/evidence/conflicts/{conflict_id}/resolve")
+async def resolve_conflict(
+    conflict_id: uuid.UUID,
+    payload: ResolveConflictIn | None = None,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Resolve a conflict group on the user's say-so.
+
+    `preferred_evidence_id` defaults to the authority-preferred member recorded
+    at detection time; only members of THIS conflict may be chosen.
+
+    Errors: 404 NOT_FOUND for an unknown conflict or evidence id, 409
+    ALREADY_RESOLVED when the conflict is already resolved, 409
+    EVIDENCE_NOT_IN_CONFLICT when the chosen evidence is not a member.
+    """
+    from app.services.evidence.conflicts import authority_preferred_evidence
+
+    body = payload or ResolveConflictIn()
+    conflict = await evidence_repo.get_conflict(session, conflict_id)
+    if conflict is None:
+        raise AppError(404, "NOT_FOUND", "Conflict not found")
+    if conflict.resolution_status == "RESOLVED":
+        raise AppError(409, "ALREADY_RESOLVED", "Conflict is already resolved")
+
+    members = await evidence_repo.list_conflict_members(session, conflict.id)
+    member_ids = {m.id for m in members}
+    if not member_ids:
+        raise AppError(409, "EMPTY_CONFLICT", "Conflict has no evidence members")
+
+    preferred: Evidence | None
+    if body.preferred_evidence_id is not None:
+        chosen = await evidence_repo.get_evidence(session, body.preferred_evidence_id)
+        if chosen is None:
+            raise AppError(404, "NOT_FOUND", "Evidence not found")
+        if chosen.id not in member_ids:
+            raise AppError(
+                409, "EVIDENCE_NOT_IN_CONFLICT", "Evidence is not a member of this conflict"
+            )
+        preferred = chosen
+    else:
+        preferred = await authority_preferred_evidence(session, list(members))
+
+    now = datetime.now(UTC)
+    conflict.preferred_evidence_id = preferred.id if preferred is not None else None
+    conflict.resolution_status = "RESOLVED"
+    conflict.resolved_at = now
+    reason = (body.reason or "").strip()
+    conflict.resolution_reason = reason or None
+    await evidence_repo.commit(session)
+    await evidence_repo.refresh(session, conflict)
+    return {
+        "id": str(conflict.id),
+        "conflict_key": conflict.conflict_key,
+        "resolution_status": conflict.resolution_status,
+        "preferred_evidence_id": (
+            str(conflict.preferred_evidence_id) if conflict.preferred_evidence_id else None
+        ),
+        "resolution_reason": conflict.resolution_reason,
+        "resolved_at": conflict.resolved_at.isoformat() if conflict.resolved_at else None,
     }

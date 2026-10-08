@@ -22,8 +22,12 @@ MAX_CLAIMS = 4
 # budgets. Purpose shares live in research.orchestrator._EXTRACTION_SHARES.
 MAX_RESULTS_PER_RUN = 20
 
-# Claim types the extraction schema accepts. `scholarship` claims are stored as
-# evidence only (no requirement_type home in the requirements model).
+# Claim types the extraction schema accepts. Deliberately exhaustive: `career`
+# and `policy` claims are NOT LLM-extracted — career.py / policy.py record
+# those evidence rows directly from stored search results (no free-text model
+# in the loop), so they stay out of the prompt's vocabulary.
+# `scholarship` claims are stored as evidence only (no requirement_type home
+# in the requirements model).
 CLAIM_TYPES = (
     "language",
     "academic",
@@ -36,6 +40,15 @@ CLAIM_TYPES = (
 
 # Keys the deterministic evaluator understands; anything else is stored as
 # evidence but does not create a Requirement row.
+#
+# EVIDENCE-ONLY KEYS (deferred, not missing): `scholarship_availability`,
+# `career_market_signal` and `policy_intake_signal` have no `requirement_type`
+# home in the requirements model (frontend categories: academic/prerequisite/
+# language/test/document/deadline/tuition/budget/policy), so they are recorded
+# as evidence rows (claim_type "scholarship"/"career"/"policy") and surfaced by
+# funding/career/policy services and the strategy dimensions instead. Adding
+# them here would mint Requirements the evaluator cannot evaluate — the
+# deferral stays until the schema grows a real home for them.
 KNOWN_CLAIM_KEYS = {
     "ielts_overall_min",
     "academic_cgpa_min",

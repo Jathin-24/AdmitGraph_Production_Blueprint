@@ -1,4 +1,10 @@
-"""Evidence freshness policy. Values are configurable without migrations."""
+"""Evidence freshness policy. Values are configurable without migrations.
+
+Claim types WITHOUT an entry here (e.g. `policy`, `academic`, `career_goal`
+style signals) use the documented 30-day default in `freshness_deadline` —
+the fallback is intentional, never an error: an unknown claim type must still
+grow stale at a sane, bounded rate.
+"""
 
 from datetime import datetime, timedelta
 

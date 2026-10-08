@@ -17,6 +17,16 @@ def test_news_and_forum() -> None:
     assert classify_domain("www.linkedin.com") == SourceAuthority.FORUM_SOCIAL
 
 
+def test_unclassifiable_domain_is_unknown() -> None:
+    """TEST_PLAN §Required "No official source -> UNKNOWN": a domain with no
+    official/government/accredited signal must classify as UNKNOWN — never be
+    quietly upgraded to an official source (unit item 10, source authority)."""
+    assert classify_domain("randomsite") == SourceAuthority.UNKNOWN
+    assert classify_domain("some-page-host") == SourceAuthority.UNKNOWN
+    # A dot alone is credible-secondary at most, still not official.
+    assert classify_domain("randomsite.example") == SourceAuthority.CREDIBLE_SECONDARY
+
+
 def test_official_domain_override() -> None:
     assert classify_domain("www.tug.de", official_domains={"tug.de"}) == SourceAuthority.OFFICIAL_UNIVERSITY
 
