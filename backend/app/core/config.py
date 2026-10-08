@@ -19,6 +19,31 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     rate_limit_per_minute: int = 60
 
+    # --- Auth (JWT bearer + Argon2 local accounts) ---
+    jwt_secret: str = ""
+    jwt_ttl_seconds: int = 7 * 24 * 3600
+    admin_emails: str = ""  # comma-separated emails granted ADMIN on register
+
+    # --- Mail: real SMTP when configured, otherwise a local file outbox ---
+    email_enabled: bool = False
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_starttls: bool = True
+    email_from: str = "AdmitGraph <no-reply@admitgraph.local>"
+    email_outbox_dir: str = "var/outbox"
+
+    # --- In-process scheduler (monitor checks, freshness, reminders) ---
+    scheduler_enabled: bool = True
+    scheduler_tick_seconds: int = 30
+    monitor_max_checks_per_tick: int = 5
+
+    # --- SerpApi reliability (per serpapi_docs/SERPAPI_INTEGRATION.md) ---
+    serpapi_cache_ttl_seconds: int = 6 * 3600
+    serpapi_max_concurrency: int = 3
+    serpapi_circuit_threshold: int = 5  # consecutive failures before breaker opens
+
     @property
     def llm_endpoints(self) -> list[dict[str, str]]:
         providers = [p.strip() for p in self.llm_providers.split(",") if p.strip()]

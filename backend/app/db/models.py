@@ -117,11 +117,28 @@ class User(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     email: Mapped[str] = mapped_column(Text, unique=True)
     full_name: Mapped[str | None] = mapped_column(Text)
+    password_hash: Mapped[str | None] = mapped_column(Text)  # NULL = anonymous/demo user
     role: Mapped[UserRole] = mapped_column(
         Enum(UserRole, name="user_role", create_type=False), server_default="STUDENT"
     )
     created_at: Mapped[datetime] = _ts()
     updated_at: Mapped[datetime] = _ts()
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+    __table_args__ = (Index("ix_notifications_user_created", "user_id", "created_at"),)
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    type: Mapped[str] = mapped_column(Text)  # e.g. DEADLINE_CHANGED, RESEARCH_COMPLETE
+    title: Mapped[str] = mapped_column(Text)
+    body: Mapped[str] = mapped_column(Text)
+    link: Mapped[str | None] = mapped_column(Text)  # in-app route, e.g. /monitor
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default="{}")
+    email_status: Mapped[str] = mapped_column(Text, server_default="PENDING")  # PENDING|SENT|SKIPPED|FAILED
+    email_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _ts()
 
 
 class StudentProfile(Base):
@@ -289,6 +306,7 @@ class Program(Base):
     first_seen_at: Mapped[datetime] = _ts()
     last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     active: Mapped[bool] = mapped_column(Boolean, server_default="true")
+    updated_at: Mapped[datetime] = _ts()  # kept current by the programs_updated_at trigger
 
 
 class Intake(Base):
@@ -461,6 +479,7 @@ class ResearchPlan(Base):
     )
     requested_goal: Mapped[dict[str, Any]] = mapped_column(JSONB)
     planned_queries: Mapped[list[Any]] = mapped_column(JSONB, server_default="[]")
+    mode: Mapped[str] = mapped_column(Text, server_default="live")  # live | demo
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_message: Mapped[str | None] = mapped_column(Text)

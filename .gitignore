@@ -13,3 +13,5 @@ coverage/
 .venv/
 *.egg-info/
 *.log
+# runtime artifacts (local mail outbox, scratch)
+backend/var/

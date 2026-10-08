@@ -170,6 +170,7 @@ CREATE TABLE programs (
   first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_verified_at TIMESTAMPTZ,
   active BOOLEAN NOT NULL DEFAULT TRUE,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(institution_id, normalized_name)
 );
 
