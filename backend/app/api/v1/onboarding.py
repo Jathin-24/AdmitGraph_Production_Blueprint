@@ -29,8 +29,9 @@ async def answers(
 async def progress(session: AsyncSession = Depends(get_session)) -> OnboardingProgressOut:
     """Completion for the current profile.
 
-    REQUIRED_KEYS (the four original questions: goal/education/tests/budget)
-    still decide `missing_required_keys`; optional answers only ever raise
+    REQUIRED_KEYS (field_of_study, current_degree, cgpa, total_budget_amount
+    — the four original questions: goal/education/tests/budget) still decide
+    `missing_required_keys`; optional answers only ever raise
     `completion_percent`.
     """
     filled = await onboarding_service.answered_from_db(session)

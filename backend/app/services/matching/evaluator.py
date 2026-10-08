@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
 from app.db.models import RequirementStatus
+from app.services.matching.normalize import is_test_expired, normalize_percentage_to_cgpa
 
 
 @dataclass
@@ -23,6 +24,12 @@ class ProfileFacts:
     graduation_year: int | None = None
     months_experience: int = 0
     subjects: set[str] = field(default_factory=set)
+    # Filled POST-construction by persist._profile_facts (plain attribute
+    # assignment bypasses __post_init__, so evaluate() also coerces at read
+    # time); defaulted so every existing construction site keeps working.
+    language_score: Decimal | None = None
+    language_expiry_date: date | None = None
+    matched_credits: Decimal | None = None
 
     def __post_init__(self) -> None:
         # Numeric facts may arrive as float/int (API payloads, in-session ORM
@@ -32,6 +39,9 @@ class ProfileFacts:
         self.percentage = _num(self.percentage)
         self.ielts_overall = _num(self.ielts_overall)
         self.total_budget_amount = _num(self.total_budget_amount)
+        self.language_score = _num(self.language_score)
+        self.matched_credits = _num(self.matched_credits)
+        self.language_expiry_date = _as_date(self.language_expiry_date)
 
 
 def _num(v: Any) -> Decimal | None:
@@ -41,6 +51,28 @@ def _num(v: Any) -> Decimal | None:
         return Decimal(str(v))
     except (TypeError, ValueError, ArithmeticError):
         return None
+
+
+def _as_date(v: Any) -> date | None:
+    """Lenient date fact: date/datetime/ISO text accepted, None when unusable."""
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    text = str(v).strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def _is_ielts_type(test_type: str) -> bool:
+    """Same IELTS detection the readers use (strategies.py / persist.py)."""
+    return _normalized(test_type) in ("ielts", "ielts_academic")
 
 
 def _normalized(text: str) -> str:
@@ -65,39 +97,70 @@ def evaluate(requirement: dict[str, Any], profile: ProfileFacts) -> tuple[Requir
 
     if key in ("academic_cgpa_min", "cgpa_min"):
         required = _num(value.get("min"))
-        if profile.cgpa is None or required is None:
+        required_scale = _num(value.get("scale"))
+        profile_scale = _num(profile.cgpa_scale)
+        got = _num(profile.cgpa)
+        derived = False
+        if got is None:
+            # Percentage-only transcripts still get an academic fit check: derive
+            # the comparable CGPA on a KNOWN scale (the profile's own, else the
+            # requirement's) — never on an assumed one.
+            percentage = _num(profile.percentage)
+            derivation_scale = profile_scale or required_scale
+            if percentage is not None and derivation_scale is not None:
+                derived_cgpa = normalize_percentage_to_cgpa(percentage, derivation_scale)
+                if derived_cgpa is not None:
+                    got = derived_cgpa
+                    profile_scale = derivation_scale
+                    derived = True
+        if got is None or required is None:
             return RequirementStatus.UNKNOWN, "CGPA or required threshold missing"
         # Compare on the same scale: a 3.0/4.0 requirement is not "3.0" on a 10-point scale.
-        required_scale = _num(value.get("scale")) or profile.cgpa_scale
-        got = profile.cgpa
         want = required
         if (
             required_scale
-            and profile.cgpa_scale
-            and required_scale != profile.cgpa_scale
+            and profile_scale
+            and required_scale != profile_scale
             and required_scale > 0
-            and profile.cgpa_scale > 0
+            and profile_scale > 0
         ):
-            got = (profile.cgpa / profile.cgpa_scale) * Decimal(100)
+            got = (got / profile_scale) * Decimal(100)
             want = (required / required_scale) * Decimal(100)
             label = "normalized CGPA%"
             return _threshold_status(got, want, label)
+        suffix = " (derived from percentage)" if derived else ""
         if got >= want:
-            return RequirementStatus.SATISFIED, f"CGPA {got} >= {want} (same scale)"
+            return RequirementStatus.SATISFIED, f"CGPA {got} >= {want} (same scale){suffix}"
         gap = want - got
-        if profile.cgpa_scale and gap <= profile.cgpa_scale * Decimal("0.05"):
-            return RequirementStatus.PARTIAL, f"CGPA {got} slightly below {want}"
-        return RequirementStatus.NOT_SATISFIED, f"CGPA {got} < {want}"
+        if profile_scale and gap <= profile_scale * Decimal("0.05"):
+            return RequirementStatus.PARTIAL, f"CGPA {got} slightly below {want}{suffix}"
+        return RequirementStatus.NOT_SATISFIED, f"CGPA {got} < {want}{suffix}"
 
     if key in ("language_ielts_overall", "ielts_overall_min"):
         required = _num(value.get("min"))
-        if profile.ielts_overall is None or required is None:
+        # Expiry first: an expired certificate is NEVER silently satisfied,
+        # even when the reported score clears the bar.
+        expiry = _as_date(profile.language_expiry_date)
+        if expiry is not None and is_test_expired(expiry):
+            return RequirementStatus.NOT_SATISFIED, f"test expired {expiry}"
+        score = _num(profile.ielts_overall)
+        if score is None:
+            reported = str(profile.english_test_type or "").strip()
+            if reported and not _is_ielts_type(reported):
+                # A TOEFL/PTE/DET (or the legacy english_overall) number lives
+                # on a different scale: report it, never convert it.
+                return (
+                    RequirementStatus.NEEDS_VERIFICATION,
+                    f"reported {reported}; equivalence to IELTS not asserted",
+                )
             return RequirementStatus.UNKNOWN, "IELTS score or required threshold missing"
-        if profile.ielts_overall >= required:
-            return RequirementStatus.SATISFIED, f"IELTS {profile.ielts_overall} >= {required}"
-        if profile.ielts_overall >= required - Decimal("0.5"):
-            return RequirementStatus.PARTIAL, f"IELTS {profile.ielts_overall} within 0.5 of {required}"
-        return RequirementStatus.NOT_SATISFIED, f"IELTS {profile.ielts_overall} < {required}"
+        if required is None:
+            return RequirementStatus.UNKNOWN, "IELTS score or required threshold missing"
+        if score >= required:
+            return RequirementStatus.SATISFIED, f"IELTS {score} >= {required}"
+        if score >= required - Decimal("0.5"):
+            return RequirementStatus.PARTIAL, f"IELTS {score} within 0.5 of {required}"
+        return RequirementStatus.NOT_SATISFIED, f"IELTS {score} < {required}"
 
     if key in ("backlogs_max",):
         max_backlogs = value.get("max", 0)
@@ -124,7 +187,11 @@ def evaluate(requirement: dict[str, Any], profile: ProfileFacts) -> tuple[Requir
 
     if key in ("min_credits",):
         required = _num(value.get("credits"))
-        have = _num(value.get("_matched_credits"))
+        # Profile-side fact wins; the requirement-side hint stays as a fallback
+        # for callers that inject `_matched_credits` into the value.
+        have = _num(profile.matched_credits)
+        if have is None:
+            have = _num(value.get("_matched_credits"))
         if required is None:
             return RequirementStatus.UNKNOWN, "Missing credit requirement"
         if have is None:
@@ -144,9 +211,14 @@ def evaluate(requirement: dict[str, Any], profile: ProfileFacts) -> tuple[Requir
         return RequirementStatus.NOT_SATISFIED, "Budget materially below estimated cost"
 
     if key in ("application_deadline",):
-        try:
-            deadline = date.fromisoformat(str(value.get("date")))
-        except (ValueError, TypeError):
+        # Mirrors evidence.extraction.parse_deadline_date: a single `date`, or
+        # an application window whose `end` is the effective deadline.
+        deadline = None
+        for raw in (value.get("date"), value.get("end"), value.get("deadline")):
+            deadline = _as_date(raw)
+            if deadline is not None:
+                break
+        if deadline is None:
             return RequirementStatus.UNKNOWN, "Deadline missing"
         if deadline < date.today():
             return RequirementStatus.NOT_SATISFIED, "Deadline has passed"

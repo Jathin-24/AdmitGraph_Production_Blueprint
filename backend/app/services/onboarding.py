@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError
-from app.db.models import ProfilePreference, Skill, TestScore
+from app.db.models import (
+    EducationRecord,
+    EducationSubject,
+    ProfilePreference,
+    Skill,
+    StudentProfile,
+    TestScore,
+)
 from app.schemas.onboarding import OnboardingField, OnboardingSchema, OnboardingStep
 from app.services.profile import TRACKED_FIELDS, get_or_create_profile
 
@@ -305,6 +313,19 @@ DECIMAL_FIELDS = {
 BOOL_FIELDS = {"scholarship_dependence"}
 TEST_SCORE_FIELDS = {"english_test_overall"}
 ENGLISH_TEST_TYPE = "english_overall"
+# Payload-only companions to the score answer (all inside `answers`): which
+# English test was actually taken, when it was taken, and when it expires.
+# Legacy payloads omit all three and keep writing `english_overall` rows.
+ENGLISH_TEST_META_FIELDS = ("english_test_type", "english_test_date", "english_expiry_date")
+# English tests onboarding can record. Progress credits the score question from
+# any of these (case-insensitive); `english_overall` is the legacy default and
+# the canonical casing is what gets stored for known types.
+ENGLISH_TEST_TYPES = ("english_overall", "IELTS", "IELTS_ACADEMIC", "TOEFL", "PTE", "DET")
+ENGLISH_TEST_TYPE_BY_KEY = {t.lower(): t for t in ENGLISH_TEST_TYPES}
+ENGLISH_TEST_TYPES_LOWER = frozenset(ENGLISH_TEST_TYPE_BY_KEY)
+# Payload-only key: subjects have no StudentProfile column — they live on the
+# profile's EducationRecord (existing tables, no migration).
+SUBJECT_FIELDS = {"subjects"}
 SKILL_SOURCE = "onboarding"
 
 REQUIRED_KEYS = {f.key for s in ONBOARDING_SCHEMA.steps for f in s.fields if f.required}
@@ -393,25 +414,189 @@ def _to_bool(key: str, raw: Any) -> bool | None:
     raise AppError(400, "VALIDATION_ERROR", f"Expected yes or no for {key}")
 
 
+def _to_date(key: str, raw: Any) -> date | None:
+    """Coerce a YYYY-MM-DD form value to date; blank/None clears the column."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not raw:
+            return None
+    try:
+        return date.fromisoformat(str(raw)[:10])
+    except (TypeError, ValueError):
+        raise AppError(400, "VALIDATION_ERROR", f"Expected a date (YYYY-MM-DD) for {key}") from None
+
+
+def _english_test_type(answers: dict[str, Any]) -> str:
+    """The REAL test type from the payload; legacy payloads keep the default."""
+    raw = answers.get("english_test_type")
+    if raw is None:
+        return ENGLISH_TEST_TYPE
+    text = str(raw).strip()
+    if not text:
+        return ENGLISH_TEST_TYPE
+    # Known tests are stored with canonical casing (IELTS, not "iElTs") so the
+    # exact-match readers (strategies.py, persist.py) find them; anything else
+    # is stored exactly as the user reported it — never guessed.
+    return ENGLISH_TEST_TYPE_BY_KEY.get(text.lower(), text)
+
+
 async def _upsert_english_score(
-    session: AsyncSession, profile_id: UUID, score: Decimal | None
+    session: AsyncSession, profile_id: UUID, answers: dict[str, Any]
 ) -> None:
+    """Upsert the profile's English TestScore from score + companion answers.
+
+    The row is keyed by the real test type (`english_test_type`, defaulting to
+    the legacy `english_overall`); an explicit type first adopts the legacy row
+    so a legacy-to-new upgrade never duplicates the score. A blank score still
+    deletes (legacy clear semantics — date companions are irrelevant then);
+    date companions apply only when their key is present, so a plain score
+    update never wipes dates set earlier.
+    """
+    test_type = _english_test_type(answers)
     result = await session.execute(
         select(TestScore).where(
             TestScore.profile_id == profile_id,
-            TestScore.test_type == ENGLISH_TEST_TYPE,
+            TestScore.test_type == test_type,
         )
     )
     row = result.scalar_one_or_none()
-    if score is None:
-        if row is not None:
-            await session.delete(row)
-    elif row is None:
-        session.add(
-            TestScore(profile_id=profile_id, test_type=ENGLISH_TEST_TYPE, overall_score=score)
+    if row is None and test_type != ENGLISH_TEST_TYPE:
+        legacy_result = await session.execute(
+            select(TestScore).where(
+                TestScore.profile_id == profile_id,
+                TestScore.test_type == ENGLISH_TEST_TYPE,
+            )
         )
+        legacy = legacy_result.scalar_one_or_none()
+        if legacy is not None:
+            legacy.test_type = test_type  # adopt the row onboarding already owns
+            row = legacy
+
+    if "english_test_overall" in answers:
+        score = _to_decimal("english_test_overall", answers["english_test_overall"])
+        if score is None:
+            if row is not None:
+                await session.delete(row)
+            return
+        if row is None:
+            row = TestScore(profile_id=profile_id, test_type=test_type, overall_score=score)
+            session.add(row)
+        else:
+            row.overall_score = score
+    elif row is None:
+        # Type/dates without a score record what was reported honestly:
+        # overall_score stays NULL (progress only credits scored rows).
+        row = TestScore(profile_id=profile_id, test_type=test_type)
+        session.add(row)
+    if "english_test_date" in answers:
+        row.test_date = _to_date("english_test_date", answers["english_test_date"])
+    if "english_expiry_date" in answers:
+        row.expiry_date = _to_date("english_expiry_date", answers["english_expiry_date"])
+
+
+def _to_subjects(raw: Any) -> list[tuple[str, Decimal | None]]:
+    """Parse a subjects answer: legacy ["Math"] (or comma text) and
+    [{"name": "Math", "credits": "4"}] objects both work.
+
+    Blank names are dropped, duplicates (case-insensitive) collapse, and
+    malformed objects are a 400 instead of silently storing garbage.
+    """
+    if raw is None:
+        items: list[Any] = []
+    elif isinstance(raw, dict):
+        items = [raw]
+    elif isinstance(raw, list):
+        items = raw
     else:
-        row.overall_score = score
+        items = _to_list(raw)
+    subjects: list[tuple[str, Decimal | None]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(items):
+        credits: Decimal | None = None
+        if isinstance(item, dict):
+            name = str(item.get("name") or "").strip()
+            if not name:
+                raise AppError(400, "VALIDATION_ERROR", f"Subject #{index + 1} needs a name")
+            raw_credits = item.get("credits")
+            if raw_credits not in (None, ""):
+                credits = _to_decimal(f"subjects[{index}].credits", raw_credits)
+                if credits is not None and credits < 0:
+                    raise AppError(
+                        400, "VALIDATION_ERROR", f"Subject credits cannot be negative ({name})"
+                    )
+        else:
+            name = str(item).strip()
+        if not name:
+            continue
+        dedupe_key = name.lower()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        subjects.append((name, credits))
+    return subjects
+
+
+async def _education_record(
+    session: AsyncSession, profile: StudentProfile
+) -> EducationRecord | None:
+    """The profile's current (else newest) education record, if any."""
+    result = await session.execute(
+        select(EducationRecord)
+        .where(EducationRecord.profile_id == profile.id)
+        .order_by(EducationRecord.is_current.is_(True).desc(), EducationRecord.created_at.desc())
+        .limit(1)
+    )
+    return result.scalars().first()
+
+
+async def _replace_subjects(
+    session: AsyncSession, profile: StudentProfile, raw: Any
+) -> None:
+    """Replace onboarding-captured subjects on the profile's education record.
+
+    The newest/current EducationRecord is reused, or created from the profile's
+    education answers when the profile has none yet (degree/institution are NOT
+    NULL columns; they stay blank until the wizard's education answers arrive —
+    re-submission then refreshes them). Payloads without `subjects` never reach
+    this function, so legacy flows keep their UNKNOWN prerequisite state.
+    """
+    subjects = _to_subjects(raw)
+    record = await _education_record(session, profile)
+    if record is not None:
+        existing = await session.execute(
+            select(EducationSubject).where(EducationSubject.education_record_id == record.id)
+        )
+        for row in existing.scalars().all():
+            await session.delete(row)
+        # DELETEs must reach the database before the INSERTs (re-submission safety).
+        await session.flush()
+    if not subjects:
+        return
+    if record is None:
+        record = EducationRecord(
+            profile_id=profile.id,
+            institution_name=profile.institution_name or "",
+            degree=profile.current_degree or "",
+            field_of_study=profile.field_of_study,
+            is_current=True,
+        )
+        session.add(record)
+        await session.flush()
+    elif profile.current_degree:
+        record.degree = profile.current_degree
+        record.institution_name = profile.institution_name or record.institution_name
+        record.field_of_study = profile.field_of_study or record.field_of_study
+    for name, credits in subjects:
+        session.add(
+            EducationSubject(
+                education_record_id=record.id,
+                subject_name=name,
+                credits=credits,
+                normalized_subject=name.lower(),
+            )
+        )
 
 
 async def _replace_skills(session: AsyncSession, profile_id: UUID, items: list[str]) -> None:
@@ -480,13 +665,21 @@ async def answered_from_db(session: AsyncSession) -> set[str]:
     ).first()
     if skill is not None:
         filled.add("skills")
-    english = await session.execute(
-        select(TestScore).where(
-            TestScore.profile_id == profile.id,
-            TestScore.test_type == ENGLISH_TEST_TYPE,
+    english = (
+        await session.execute(
+            select(TestScore.id)
+            .where(
+                TestScore.profile_id == profile.id,
+                # Real test types are stored as reported (IELTS, TOEFL, ...);
+                # matching is case-insensitive and a scoreless row (type-only
+                # payload) never credits a score the user did not give.
+                func.lower(TestScore.test_type).in_(ENGLISH_TEST_TYPES_LOWER),
+                TestScore.overall_score.is_not(None),
+            )
+            .limit(1)
         )
-    )
-    if english.scalar_one_or_none() is not None:
+    ).first()
+    if english is not None:
         filled.add("english_test_overall")
     return filled
 
@@ -496,8 +689,10 @@ async def apply_answers(session: AsyncSession, answers: dict[str, Any]) -> set[s
 
     Form values are strings: numeric fields are converted (or rejected with a
     400 instead of a 500), yes/no answers become booleans, blank values clear
-    the column, list answers are split on commas, the English test score
-    upserts a TestScore row, and skills replace the rows onboarding owns.
+    the column, list answers are split on commas, the English test row upserts
+    from its whole payload (score + `english_test_type`/`english_test_date`/
+    `english_expiry_date` companions), subjects replace the rows onboarding
+    owns, and skills replace the rows onboarding owns.
     """
     profile = await get_or_create_profile(session)
     filled: set[str] = set()
@@ -533,8 +728,17 @@ async def apply_answers(session: AsyncSession, answers: dict[str, Any]) -> set[s
         elif key in SKILL_FIELD_MAP:
             await _replace_skills(session, profile.id, _to_list(value))
             filled.add(key)
-        elif key in TEST_SCORE_FIELDS:
-            await _upsert_english_score(session, profile.id, _to_decimal(key, value))
-            filled.add(key)
+    # The English test row is written from the whole payload (score, which test,
+    # and its dates travel together), and subjects need the education answers
+    # handled above — both therefore run after the column loop, so payload key
+    # order can never matter.
+    english_keys = TEST_SCORE_FIELDS | set(ENGLISH_TEST_META_FIELDS)
+    handled_english = english_keys & answers.keys()
+    if handled_english:
+        await _upsert_english_score(session, profile.id, answers)
+        filled.update(handled_english)
+    if SUBJECT_FIELDS & answers.keys():
+        await _replace_subjects(session, profile, answers["subjects"])
+        filled.update(SUBJECT_FIELDS & answers.keys())
     await session.commit()
     return filled

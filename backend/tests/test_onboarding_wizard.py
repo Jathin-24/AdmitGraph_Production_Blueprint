@@ -9,18 +9,20 @@ exactly the original four required answers.
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
 
 from app.api.v1.onboarding import progress
 from app.core.errors import AppError
-from app.db.models import ProfilePreference, Skill
+from app.db.models import ProfilePreference, Skill, StudentProfile
 from app.services import onboarding as onboarding_service
 from app.services.onboarding import apply_answers
-from app.services.profile import get_or_create_profile
+from app.services.profile import get_or_create_profile, validate_profile
 
 
 def test_schema_is_seven_steps_with_original_required_keys() -> None:
@@ -69,6 +71,13 @@ def test_every_schema_key_has_a_storage_home() -> None:
     )
     assert schema_keys - stored == set(), "questions without a column to land in"
     assert stored - schema_keys == set(), "mapped keys without a question"
+    # The English-test companions and `subjects` are payload-only: answers the
+    # form may send alongside a question, not new wizard questions — so the
+    # schema (and REQUIRED_KEYS) deliberately stay untouched.
+    payload_only = set(onboarding_service.ENGLISH_TEST_META_FIELDS) | set(
+        onboarding_service.SUBJECT_FIELDS
+    )
+    assert not (schema_keys & payload_only)
 
 
 def test_server_defaults_are_not_treated_as_answers() -> None:
@@ -280,3 +289,71 @@ async def test_progress_keeps_original_required_key_semantics(db_session: Any) -
     assert late.missing_required_keys == []
     assert late.completion_percent == 100.0
     assert late.completion_percent >= mid.completion_percent
+
+
+# ------------------------------------------- English test companions (payload-only)
+
+
+def test_english_test_type_defaults_canonicalizes_and_preserves_reported() -> None:
+    pick = onboarding_service._english_test_type
+    # Legacy payloads (no companion key) keep mapping to english_overall.
+    assert pick({}) == "english_overall"
+    assert pick({"english_test_type": "   "}) == "english_overall"
+    # Known tests are stored with canonical casing so exact-match readers work.
+    assert pick({"english_test_type": " ielts "}) == "IELTS"
+    assert pick({"english_test_type": "toefl"}) == "TOEFL"
+    # Anything else is stored exactly as reported — never guessed.
+    assert pick({"english_test_type": "Duolingo English Test"}) == "Duolingo English Test"
+
+
+def test_english_date_coercion_accepts_iso_and_400s_garbage() -> None:
+    coerce = onboarding_service._to_date
+    assert coerce("english_test_date", "2027-06-30") == date(2027, 6, 30)
+    assert coerce("english_expiry_date", "") is None
+    assert coerce("english_expiry_date", None) is None
+    for bad in ("next june", "2027-13-40", "30-06-2027"):
+        with pytest.raises(AppError) as exc:
+            coerce("english_test_date", bad)
+        assert exc.value.status_code == 400
+
+
+def test_subjects_answer_accepts_legacy_and_object_forms() -> None:
+    parse = onboarding_service._to_subjects
+    # Legacy: a plain list of names (or comma text), credits stay UNKNOWN.
+    assert parse(["Mathematics", " Physics "]) == [("Mathematics", None), ("Physics", None)]
+    assert parse("Math, Physics") == [("Math", None), ("Physics", None)]
+    # New: {name, credits} objects; missing credits stay UNKNOWN, not zero.
+    assert parse([{"name": "Mathematics", "credits": "4"}, {"name": "Physics"}]) == [
+        ("Mathematics", Decimal("4")),
+        ("Physics", None),
+    ]
+    # Blanks drop and duplicates collapse case-insensitively.
+    assert parse(["Math", "math", "   "]) == [("Math", None)]
+
+
+def test_subjects_answer_rejects_malformed_entries() -> None:
+    parse = onboarding_service._to_subjects
+    for bad in (
+        [{"credits": "4"}],  # object without a name
+        [{"name": "Math", "credits": "half"}],  # non-numeric credits
+        [{"name": "Math", "credits": "-2"}],  # negative credits
+    ):
+        with pytest.raises(AppError) as exc:
+            parse(bad)
+        assert exc.value.status_code == 400
+
+
+# ------------------------------------------------- profile validation unchanged
+
+
+def test_profile_validation_still_requires_cgpa_or_percentage() -> None:
+    empty = StudentProfile(user_id=uuid4())
+    out = validate_profile(empty)
+    assert out.valid is False
+    assert any("Provide either CGPA or percentage" in issue.message for issue in out.issues)
+
+    percentage_only = StudentProfile(user_id=uuid4(), percentage=Decimal("78.5"))
+    assert validate_profile(percentage_only).valid is True
+
+    cgpa_only = StudentProfile(user_id=uuid4(), cgpa=Decimal("8.1"))
+    assert validate_profile(cgpa_only).valid is True
