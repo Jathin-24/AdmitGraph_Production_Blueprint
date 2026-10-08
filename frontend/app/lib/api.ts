@@ -1,6 +1,72 @@
+import {
+  authResponseSchema,
+  fitResponseSchema,
+  meResponseSchema,
+  monitorCheckSchema,
+  notificationsResponseSchema,
+  parseWith,
+  portfolioListSchema,
+  researchEventsSchema,
+  researchRunOutSchema,
+  researchRunSchema,
+  riskListSchema,
+  strategiesListSchema,
+  strategyDetailSchema,
+  subscriptionChangesSchema,
+  subscriptionsListSchema,
+  type LooseParser,
+} from "./schemas";
+
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
 export const TOKEN_KEY = "admitgraph_token";
+
+/* ------------------------------------------------------------- errors */
+
+/** Every non-2xx response, carrying the HTTP status and the backend's
+ *  machine-readable code so callers can react precisely (409, 404, …)
+ *  without string-matching human messages. */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string | null;
+
+  constructor(message: string, status: number, code: string | null) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
+/** 401 while a token was stored: the session is gone. The token is dropped
+ *  and the user is sent to /login with the intended route preserved. */
+export class SessionExpiredError extends ApiError {
+  constructor() {
+    super("Session expired, please sign in again.", 401, "UNAUTHORIZED");
+    this.name = "SessionExpiredError";
+  }
+}
+
+/** Path the session-expired redirect should return to after signing in. */
+export function loginRedirectTarget(): string {
+  if (typeof window === "undefined") return "/login";
+  const next = `${window.location.pathname}${window.location.search}`;
+  if (window.location.pathname.startsWith("/login") || window.location.pathname.startsWith("/register")) {
+    return "/login";
+  }
+  return `/login?expired=1&next=${encodeURIComponent(next)}`;
+}
+
+/** Only one 401 ever triggers a navigation — parallel queries fail together. */
+let redirectingToLogin = false;
+
+function redirectIfSessionExpired(): void {
+  if (typeof window === "undefined" || redirectingToLogin) return;
+  const target = loginRedirectTarget();
+  if (target === "/login") return; // already on the auth screen
+  redirectingToLogin = true;
+  window.location.assign(target);
+}
 
 /** Bearer token for authenticated requests; null = anonymous demo session. */
 export function getToken(): string | null {
@@ -37,26 +103,40 @@ export interface ResearchEvents {
   steps: ResearchStep[];
 }
 
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+async function apiFetch<T>(
+  path: string,
+  init?: RequestInit,
+  parser?: LooseParser<T>
+): Promise<T> {
   const hadToken = getToken() !== null;
   const res = await fetch(`${API_BASE}${path}`, {
     headers: { "Content-Type": "application/json", ...authHeaders(), ...(init?.headers ?? {}) },
     ...init,
   });
   if (!res.ok) {
-    // A 401 means our stored token is no longer valid: drop it so the app
-    // falls back to the anonymous demo session instead of erroring forever.
-    if (res.status === 401 && hadToken) setToken(null);
+    let code: string | null = null;
     let message = `Request failed (${res.status})`;
     try {
       const body = await res.json();
       message = body?.error?.message ?? message;
+      code = typeof body?.error?.code === "string" ? body.error.code : null;
     } catch {
       /* ignore */
     }
-    throw new Error(message);
+    if (res.status === 401 && hadToken) {
+      // A 401 with a stored token means the session expired: drop the token
+      // so the app falls back to the anonymous demo session, tell the user in
+      // plain words and return them to the sign-in screen with their route.
+      setToken(null);
+      redirectIfSessionExpired();
+      throw new SessionExpiredError();
+    }
+    throw new ApiError(message, res.status, code);
   }
-  return (await res.json()) as T;
+  const json: unknown = await res.json();
+  // `parser` was already checked against T at the call site — parse here so a
+  // schema mismatch degrades to the raw payload instead of throwing.
+  return parser ? (parseWith(json, parser) as T) : (json as T);
 }
 
 /* ------------------------------------------------------------------ auth */
@@ -80,27 +160,36 @@ export interface RegisterInput {
 }
 
 export function login(input: { email: string; password: string }): Promise<AuthResponse> {
-  return apiFetch<AuthResponse>("/auth/login", { method: "POST", body: JSON.stringify(input) });
+  return apiFetch<AuthResponse>(
+    "/auth/login",
+    { method: "POST", body: JSON.stringify(input) },
+    authResponseSchema
+  );
 }
 
 export function register(input: RegisterInput): Promise<AuthResponse> {
-  return apiFetch<AuthResponse>("/auth/register", { method: "POST", body: JSON.stringify(input) });
+  return apiFetch<AuthResponse>(
+    "/auth/register",
+    { method: "POST", body: JSON.stringify(input) },
+    authResponseSchema
+  );
 }
 
 /** Current user for the stored bearer token; 401 clears it (see apiFetch). */
 export function getMe(): Promise<{ user: AuthUser }> {
-  return apiFetch("/auth/me");
+  return apiFetch<{ user: AuthUser }>("/auth/me", undefined, meResponseSchema);
 }
 
 export function startResearchRun(intakeYear?: number): Promise<ResearchRunOut> {
-  return apiFetch<ResearchRunOut>("/research/runs", {
-    method: "POST",
-    body: JSON.stringify({ intake_year: intakeYear }),
-  });
+  return apiFetch<ResearchRunOut>(
+    "/research/runs",
+    { method: "POST", body: JSON.stringify({ intake_year: intakeYear }) },
+    researchRunOutSchema
+  );
 }
 
 export function getRunEvents(runId: string): Promise<ResearchEvents> {
-  return apiFetch<ResearchEvents>(`/research/runs/${runId}/events`);
+  return apiFetch<ResearchEvents>(`/research/runs/${runId}/events`, undefined, researchEventsSchema);
 }
 
 export function getRun(runId: string): Promise<{
@@ -108,12 +197,20 @@ export function getRun(runId: string): Promise<{
   error_message: string | null;
   mode?: "live" | "demo";
 }> {
-  return apiFetch(`/research/runs/${runId}`);
+  return apiFetch<{ status: string; error_message: string | null; mode?: "live" | "demo" }>(
+    `/research/runs/${runId}`,
+    undefined,
+    researchRunSchema
+  );
 }
 
 /** Instant example run: replays a captured real research run (no credits burned). */
 export function startDemoRun(): Promise<ResearchRunOut> {
-  return apiFetch<ResearchRunOut>("/research/demo", { method: "POST", body: "{}" });
+  return apiFetch<ResearchRunOut>(
+    "/research/demo",
+    { method: "POST", body: "{}" },
+    researchRunOutSchema
+  );
 }
 
 export interface NotificationItem {
@@ -131,7 +228,11 @@ export function listNotifications(): Promise<{
   items: NotificationItem[];
   unread_count: number;
 }> {
-  return apiFetch("/notifications");
+  return apiFetch<{ items: NotificationItem[]; unread_count: number }>(
+    "/notifications",
+    undefined,
+    notificationsResponseSchema
+  );
 }
 
 export function markNotificationRead(id: string): Promise<{ read: boolean }> {
@@ -160,6 +261,37 @@ export interface StrategySummary {
   created_at: string;
 }
 
+/** FRONTEND_SPEC §Strategy dashboard card fields (backend `_portfolio_rows`). */
+export interface PortfolioRow {
+  program_id: string;
+  program_name: string | null;
+  institution: string | null;
+  category: string;
+  priority: number;
+  rationale: string;
+  fit_score: string | null;
+  reasons: string[];
+  top_risk: { id: string; severity: string; risk_type: string; title: string } | null;
+  estimated_cost: Record<string, unknown>;
+  next_action: string | null;
+  next_deadline: string | null;
+  evidence_freshness: { status: string; stale: number; total: number } | null;
+}
+
+export interface StrategyRisk {
+  id: string;
+  risk_type: string;
+  severity: string;
+  title: string;
+  reason: string;
+  recommended_action: string;
+  status: string;
+  confidence: string;
+  program_id: string | null;
+  requirement_id: string | null;
+  resolved_at: string | null;
+}
+
 export interface StrategyDetail {
   id: string;
   status: string;
@@ -168,25 +300,8 @@ export interface StrategyDetail {
   scoring_version: string;
   strategy_version: string;
   created_at: string;
-  portfolio: {
-    program_id: string;
-    program_name: string | null;
-    institution: string | null;
-    category: string;
-    priority: number;
-    rationale: string;
-    next_action: string | null;
-    next_deadline: string | null;
-  }[];
-  risks: {
-    id: string;
-    risk_type: string;
-    severity: string;
-    title: string;
-    reason: string;
-    recommended_action: string;
-    status: string;
-  }[];
+  portfolio: PortfolioRow[];
+  risks: StrategyRisk[];
   roadmap_tasks: {
     id: string;
     title: string;
@@ -317,15 +432,49 @@ export interface FitItem {
 }
 
 export function getStrategies(): Promise<{ items: StrategySummary[] }> {
-  return apiFetch("/strategies");
+  return apiFetch<{ items: StrategySummary[] }>("/strategies", undefined, strategiesListSchema);
 }
 
 export function getStrategy(strategyId: string): Promise<StrategyDetail> {
-  return apiFetch(`/strategies/${strategyId}`);
+  return apiFetch<StrategyDetail>(`/strategies/${strategyId}`, undefined, strategyDetailSchema);
+}
+
+/** Fresh portfolio rows for one strategy (same rows as getStrategy().portfolio). */
+export function getPortfolio(strategyId: string): Promise<{ items: PortfolioRow[] }> {
+  return apiFetch<{ items: PortfolioRow[] }>(
+    `/strategies/${strategyId}/portfolio`,
+    undefined,
+    portfolioListSchema
+  );
+}
+
+/** Fresh risk rows for one strategy (same rows as getStrategy().risks). */
+export function listRisks(strategyId: string): Promise<{ items: StrategyRisk[] }> {
+  return apiFetch<{ items: StrategyRisk[] }>(
+    `/strategies/${strategyId}/risks`,
+    undefined,
+    riskListSchema
+  );
+}
+
+/** Move a risk to ACKNOWLEDGED / RESOLVED / DISMISSED (OPEN is never a target). */
+export function updateRisk(
+  strategyId: string,
+  riskId: string,
+  status: "ACKNOWLEDGED" | "RESOLVED" | "DISMISSED"
+): Promise<{ risk: StrategyRisk }> {
+  return apiFetch(`/strategies/${strategyId}/risks/${riskId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  });
 }
 
 export function getFit(strategyId: string): Promise<{ scoring_version: string; items: FitItem[] }> {
-  return apiFetch(`/strategies/${strategyId}/fit`);
+  return apiFetch<{ scoring_version: string; items: FitItem[] }>(
+    `/strategies/${strategyId}/fit`,
+    undefined,
+    fitResponseSchema
+  );
 }
 
 export function listEvidence(programId?: string): Promise<{ items: EvidenceItem[] }> {
@@ -355,10 +504,14 @@ export interface SimulationResult {
   error?: string;
 }
 
-export function simulateStrategy(strategyId: string, scenario: string): Promise<SimulationResult> {
+export function simulateStrategy(
+  strategyId: string,
+  scenario: string,
+  modifications?: Record<string, unknown>
+): Promise<SimulationResult> {
   return apiFetch(`/strategies/${strategyId}/simulate`, {
     method: "POST",
-    body: JSON.stringify({ scenario }),
+    body: JSON.stringify(modifications ? { scenario, modifications } : { scenario }),
   });
 }
 
@@ -404,7 +557,11 @@ export function validateProfile(): Promise<ValidationOut> {
 }
 
 export function listSubscriptions(): Promise<{ items: Subscription[] }> {
-  return apiFetch("/monitor/subscriptions");
+  return apiFetch<{ items: Subscription[] }>(
+    "/monitor/subscriptions",
+    undefined,
+    subscriptionsListSchema
+  );
 }
 
 export function createSubscription(input: {
@@ -416,14 +573,19 @@ export function createSubscription(input: {
 }
 
 export function checkSubscription(subscriptionId: string): Promise<MonitorCheck> {
-  return apiFetch(`/monitor/subscriptions/${subscriptionId}/check`, {
-    method: "POST",
-    body: JSON.stringify({}),
-  });
+  return apiFetch<MonitorCheck>(
+    `/monitor/subscriptions/${subscriptionId}/check`,
+    { method: "POST", body: JSON.stringify({}) },
+    monitorCheckSchema
+  );
 }
 
 export function getSubscriptionChanges(subscriptionId: string): Promise<{ items: MonitorChange[] }> {
-  return apiFetch(`/monitor/subscriptions/${subscriptionId}/changes`);
+  return apiFetch<{ items: MonitorChange[] }>(
+    `/monitor/subscriptions/${subscriptionId}/changes`,
+    undefined,
+    subscriptionChangesSchema
+  );
 }
 
 export interface DocumentItem {
@@ -477,8 +639,10 @@ export function getOnboardingProgress(): Promise<OnboardingProgress> {
   return apiFetch("/onboarding/progress");
 }
 
+/** Answers may carry structured values (e.g. `subjects: [{name, credits}]`,
+ *  dates as YYYY-MM-DD strings) — the backend accepts dict[str, Any]. */
 export function saveOnboardingAnswers(
-  answers: Record<string, string>
+  answers: Record<string, unknown>
 ): Promise<{ accepted_keys: string[] }> {
   return apiFetch("/onboarding/answers", {
     method: "POST",
@@ -490,6 +654,28 @@ export function cancelRun(runId: string): Promise<{ status: string }> {
   return apiFetch(`/research/runs/${runId}/cancel`, { method: "POST", body: "{}" });
 }
 
+/** One bounded re-check of a claim (1 search + extraction).
+ *  409 PROVIDER_UNAVAILABLE when the search provider has no key configured. */
+export function recheckEvidence(evidenceId: string): Promise<{
+  id: string;
+  status: string;
+  recheck?: Record<string, unknown>;
+}> {
+  return apiFetch(`/evidence/${evidenceId}/recheck`, { method: "POST", body: "{}" });
+}
+
+/** Resolve a conflict group. Omitting `preferred_evidence_id` resolves to the
+ *  authority-preferred member recorded at detection time. */
+export function resolveConflict(
+  conflictId: string,
+  input?: { preferred_evidence_id?: string; reason?: string }
+): Promise<{ id: string; resolution_status: string; resolved_at: string | null }> {
+  return apiFetch(`/evidence/conflicts/${conflictId}/resolve`, {
+    method: "POST",
+    body: JSON.stringify(input ?? {}),
+  });
+}
+
 export interface ConflictItem {
   id: string;
   reason?: string | null;
@@ -498,6 +684,8 @@ export interface ConflictItem {
   evidence_ids?: string[];
   status?: string;
   resolution_status?: string | null;
+  preferred_evidence_id?: string | null;
+  resolution_reason?: string | null;
   resolved_at?: string | null;
 }
 

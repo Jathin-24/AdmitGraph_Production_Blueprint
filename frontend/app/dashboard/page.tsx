@@ -11,8 +11,11 @@ import {
   LoadingNote,
   PageHeader,
   Section,
+  SeverityChip,
   fmtDate,
 } from "../components/ui";
+import { RecheckButton } from "../components/evidence-actions";
+import { RiskActions } from "../components/risk-actions";
 import {
   createDocument,
   exportStrategyPdf,
@@ -22,6 +25,7 @@ import {
   getStrategy,
   listDocuments,
   listEvidence,
+  listPrograms,
   simulateStrategy,
   updateDocument,
   type DocumentItem,
@@ -43,6 +47,20 @@ const SCENARIOS = [
   "REMOVE_COUNTRY",
   "DEADLINE_MISSED",
 ];
+
+/** FRONTEND_SPEC §Failure simulator — student-facing scenario names. */
+const SCENARIO_COPY: Record<string, string> = {
+  TOP_3_REJECTED: "My top 3 reject me",
+  BUDGET_MINUS_25_PERCENT: "My budget drops",
+  IELTS_LOWERED: "My IELTS score is lower",
+  REMOVE_COUNTRY: "I remove a country",
+  DEADLINE_MISSED: "I miss the next deadline",
+};
+
+function scenarioLabel(scenario: string, country: string): string {
+  const base = SCENARIO_COPY[scenario] ?? scenario.replaceAll("_", " ");
+  return scenario === "REMOVE_COUNTRY" && country ? `${base}: ${country}` : base;
+}
 
 /* ------------------------------------------------ Application Readiness */
 
@@ -91,10 +109,36 @@ function docStatusCopy(status: string) {
   return DOC_STATUS_COPY[status] ?? { label: status, cls: "chip-neutral" };
 }
 
-function severityChip(severity: string): string {
-  if (severity === "CRITICAL" || severity === "HIGH") return "chip-bad";
-  if (severity === "MEDIUM") return "chip-warn";
-  return "chip-neutral";
+/** Estimated cost band copy — backend sends {currency, amount, band} (band is
+ *  LOW | MEDIUM | HIGH) or an empty object when nothing was estimated. */
+function costCopy(cost: Record<string, unknown> | null | undefined): string {
+  if (!cost || Object.keys(cost).length === 0) return "Not estimated yet";
+  const band = typeof cost.band === "string" ? cost.band.toLowerCase() : null;
+  const bandCopy = band === "low" ? "low" : band === "medium" ? "medium" : band === "high" ? "high" : null;
+  const amount =
+    typeof cost.amount === "number" && Number.isFinite(cost.amount)
+      ? `${cost.amount}${typeof cost.currency === "string" ? ` ${cost.currency}` : ""}`
+      : null;
+  if (bandCopy && amount) return `${amount} (${bandCopy} band)`;
+  if (amount) return amount;
+  if (bandCopy) return `${bandCopy} band`;
+  return "Not estimated yet";
+}
+
+/** Evidence freshness chip status: backend sends FRESH | STALE | UNKNOWN. */
+function freshnessStatus(
+  freshness: { status: string; stale: number; total: number } | null | undefined
+): string {
+  if (!freshness || !freshness.status) return "UNKNOWN";
+  return freshness.status;
+}
+
+function freshnessCopy(
+  freshness: { status: string; stale: number; total: number } | null | undefined
+): string {
+  if (!freshness || freshness.total === 0) return "no claims checked yet";
+  if (freshness.stale === 0) return `${freshness.total} claims checked`;
+  return `${freshness.stale} of ${freshness.total} stale`;
 }
 
 function DocRow({
@@ -208,6 +252,7 @@ function EvidenceDrawer({ programId, onClose }: { programId: string; onClose: ()
                     Open source ↗
                   </a>
                 )}
+                <RecheckButton evidenceId={e.id} />
               </div>
             </li>
           ))}
@@ -237,6 +282,7 @@ export default function DashboardPage() {
   const [selected, setSelected] = useState<string | null>(null);
   const [evidenceFor, setEvidenceFor] = useState<string | null>(null);
   const [scenario, setScenario] = useState(SCENARIOS[0]);
+  const [removeCountry, setRemoveCountry] = useState("");
   const [sim, setSim] = useState<SimulationResult | null>(null);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
@@ -256,6 +302,19 @@ export default function DashboardPage() {
   });
   const documents = useQuery({ queryKey: ["documents"], queryFn: listDocuments });
   const completion = useQuery({ queryKey: ["completion"], queryFn: getCompletion });
+  // Country choices for "I remove a country" come from the programs we hold —
+  // no hardcoded list, so the selector always matches real data.
+  const programs = useQuery({
+    queryKey: ["programs", "for-simulator"],
+    queryFn: () => listPrograms(1, 100),
+  });
+  const countryOptions = useMemo(() => {
+    const codes = new Set<string>();
+    for (const p of programs.data?.items ?? []) {
+      if (p.country_code) codes.add(p.country_code);
+    }
+    return Array.from(codes).sort();
+  }, [programs.data]);
 
   // Client-only "today" so expiry checks never mismatch server markup.
   useEffect(() => {
@@ -272,7 +331,12 @@ export default function DashboardPage() {
   });
 
   const simulate = useMutation({
-    mutationFn: () => simulateStrategy(selected!, scenario),
+    mutationFn: () =>
+      simulateStrategy(
+        selected!,
+        scenario,
+        scenario === "REMOVE_COUNTRY" && removeCountry ? { country: removeCountry } : undefined
+      ),
     onSuccess: (out) => {
       setSim(out);
       queryClient.invalidateQueries({ queryKey: ["strategy", selected] });
@@ -358,6 +422,35 @@ export default function DashboardPage() {
       { label: "Added", glyph: "+", cls: "chip-good", items: sim.delta.added ?? [] },
       { label: "Removed", glyph: "−", cls: "chip-bad", items: sim.delta.removed ?? [] },
     ].filter((g) => g.items.length > 0);
+
+  // Urgent action: roadmap due dates and portfolio deadlines inside 30 days.
+  // Pure client date math over data we already have — never invented urgency.
+  const urgent = useMemo(() => {
+    if (!detail.data || !today) return [];
+    const out: { key: string; title: string; days: number; href?: string }[] = [];
+    const todayMs = Date.parse(`${today}T00:00:00Z`);
+    const daysUntil = (iso: string) =>
+      Math.round((Date.parse(`${iso.slice(0, 10)}T00:00:00Z`) - todayMs) / 86_400_000);
+
+    for (const t of detail.data.roadmap_tasks) {
+      if (!t.due_date || t.status === "DONE" || t.status === "CANCELLED") continue;
+      const days = daysUntil(t.due_date);
+      if (days <= 30) out.push({ key: `task-${t.id}`, title: t.title, days });
+    }
+    for (const p of detail.data.portfolio) {
+      if (!p.next_deadline) continue;
+      const days = daysUntil(p.next_deadline);
+      if (days <= 30) {
+        out.push({
+          key: `deadline-${p.program_id}`,
+          title: `${p.program_name ?? "Program"} — application deadline`,
+          days,
+          href: `/programs/${p.program_id}`,
+        });
+      }
+    }
+    return out.sort((a, b) => b.days - a.days).slice(0, 5);
+  }, [detail.data, today]);
 
   return (
     <main className="mx-auto max-w-5xl space-y-6 px-5 py-8">
@@ -459,6 +552,37 @@ export default function DashboardPage() {
           <span className="chip chip-neutral self-start">
             {detail.data.strategy_version} · scored {detail.data.scoring_version}
           </span>
+        </section>
+      )}
+
+      {/* Urgent action — FRONTEND_SPEC §Strategy dashboard "Top" block.
+          Deadlines inside 30 days are computed client-side from the already
+          loaded strategy payload (no extra request, no backend date logic). */}
+      {detail.data && urgent.length > 0 && (
+        <section
+          className="rounded-lg border border-danger bg-danger-tint px-4 py-3"
+          aria-label="Urgent action"
+        >
+          <p className="eyebrow mb-1 text-danger">Urgent action</p>
+          <ul className="flex flex-col gap-1 text-sm text-ink">
+            {urgent.map((u) => (
+              <li key={u.key} className="flex flex-wrap items-baseline gap-2">
+                <span className="font-medium">{u.title}</span>
+                <span className="text-xs text-ink-soft">
+                  {u.days === 0
+                    ? "due today"
+                    : u.days < 0
+                      ? `${Math.abs(u.days)} days overdue`
+                      : `in ${u.days} day${u.days === 1 ? "" : "s"}`}
+                </span>
+                {u.href && (
+                  <Link href={u.href} className="link text-xs">
+                    Open →
+                  </Link>
+                )}
+              </li>
+            ))}
+          </ul>
         </section>
       )}
 
@@ -594,7 +718,7 @@ export default function DashboardPage() {
                     {detail.data.portfolio
                       .filter((p) => p.category === cat)
                       .map((p) => (
-                        <li key={p.program_id}>
+                        <li key={p.program_id} className="border-b border-line pb-3 last:border-0 last:pb-0">
                           <div className="flex items-baseline gap-2">
                             <span className="display text-sm font-medium text-forest">
                               {p.priority}
@@ -605,11 +729,65 @@ export default function DashboardPage() {
                             >
                               {p.program_name ?? "Program"}
                             </Link>
+                            {p.fit_score && (
+                              <span
+                                className="chip chip-neutral ml-auto shrink-0"
+                                title="Fit score"
+                              >
+                                {p.fit_score}
+                              </span>
+                            )}
                           </div>
                           <div className="text-xs text-ink-soft">{p.institution}</div>
                           <div className="mt-1 text-xs leading-relaxed text-ink-faint">
                             {p.rationale}
                           </div>
+
+                          {/* top 2 reasons */}
+                          {p.reasons.length > 0 && (
+                            <ul className="mt-1.5 flex flex-col gap-0.5 text-xs text-ink-soft">
+                              {p.reasons.slice(0, 2).map((reason) => (
+                                <li key={reason} className="flex gap-1.5">
+                                  <span aria-hidden className="text-forest">
+                                    ✓
+                                  </span>
+                                  <span>{reason}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+
+                          {/* top risk */}
+                          {p.top_risk && (
+                            <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
+                              <SeverityChip severity={p.top_risk.severity} />
+                              <span className="text-ink-soft">{p.top_risk.title}</span>
+                            </p>
+                          )}
+
+                          {/* next deadline + estimated cost band */}
+                          <dl className="mt-1.5 grid grid-cols-1 gap-x-3 gap-y-0.5 text-xs sm:grid-cols-2">
+                            <div className="flex gap-1.5">
+                              <dt className="text-ink-faint">Next deadline</dt>
+                              <dd className="text-ink-soft">
+                                {p.next_deadline ? fmtDate(p.next_deadline) : "—"}
+                              </dd>
+                            </div>
+                            <div className="flex gap-1.5">
+                              <dt className="text-ink-faint">Est. cost</dt>
+                              <dd className="text-ink-soft">{costCopy(p.estimated_cost)}</dd>
+                            </div>
+                          </dl>
+
+                          {/* evidence freshness */}
+                          <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs">
+                            <span className="text-ink-faint">Evidence</span>
+                            <EvidenceStatusChip status={freshnessStatus(p.evidence_freshness)} />
+                            <span className="text-ink-faint">
+                              {freshnessCopy(p.evidence_freshness)}
+                            </span>
+                          </p>
+
                           <div className="mt-1.5 flex flex-wrap items-center gap-3 text-xs">
                             <button
                               className="link text-ink-soft"
@@ -647,10 +825,13 @@ export default function DashboardPage() {
               <ul className="flex flex-col gap-3">
                 {detail.data.risks.map((r) => (
                   <li key={r.id} className="border-l-4 border-line-dark pl-3 text-sm">
-                    <span className={`chip ${severityChip(r.severity)} mr-2`}>{r.severity}</span>
+                    <SeverityChip severity={r.severity} showRaw className="mr-2" />
                     <span className="font-medium text-ink">{r.title}</span>
                     <p className="mt-1 text-ink-soft">{r.reason}</p>
                     <p className="mt-0.5 text-xs text-ink-faint">→ {r.recommended_action}</p>
+                    <div className="mt-1.5">
+                      <RiskActions strategyId={detail.data.id} riskId={r.id} status={r.status} />
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -679,29 +860,75 @@ export default function DashboardPage() {
 
           {/* Simulator */}
           <Section index="—" title="What could break this plan?">
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex flex-wrap items-end gap-3">
               <label className="flex flex-col gap-1">
                 <span className="label">Scenario</span>
                 <select
                   value={scenario}
-                  onChange={(e) => setScenario(e.target.value)}
+                  onChange={(e) => {
+                    setScenario(e.target.value);
+                    setSim(null);
+                  }}
                   className="field w-auto"
                 >
                   {SCENARIOS.map((s) => (
                     <option key={s} value={s}>
-                      {s.replaceAll("_", " ")}
+                      {scenarioLabel(s, "")}
                     </option>
                   ))}
                 </select>
               </label>
+
+              {scenario === "REMOVE_COUNTRY" && (
+                <label className="flex flex-col gap-1">
+                  <span className="label">Country to remove</span>
+                  <select
+                    value={removeCountry}
+                    onChange={(e) => {
+                      setRemoveCountry(e.target.value);
+                      setSim(null);
+                    }}
+                    className="field w-auto"
+                    required
+                  >
+                    <option value="">Choose a country…</option>
+                    {countryOptions.map((code) => (
+                      <option key={code} value={code}>
+                        {code}
+                      </option>
+                    ))}
+                    {countryOptions.length === 0 && programs.isLoading && (
+                      <option value="" disabled>
+                        Loading countries…
+                      </option>
+                    )}
+                  </select>
+                </label>
+              )}
+
               <button
                 onClick={() => simulate.mutate()}
-                disabled={simulate.isPending}
+                disabled={
+                  simulate.isPending ||
+                  (scenario === "REMOVE_COUNTRY" && !removeCountry)
+                }
                 className="btn-primary self-end"
               >
                 {simulate.isPending ? "Simulating…" : "Simulate"}
               </button>
             </div>
+
+            {scenario === "REMOVE_COUNTRY" && !removeCountry && (
+              <p className="mt-2 text-xs text-ink-faint">
+                Pick the country to drop and we will re-score your portfolio without it.
+              </p>
+            )}
+
+            {programs.isError && scenario === "REMOVE_COUNTRY" && (
+              <div className="mt-3">
+                <ErrorNote message="Country list unavailable — we could not load your programs. The rest of this simulator still works." />
+              </div>
+            )}
 
             {sim?.error && (
               <div className="mt-3">

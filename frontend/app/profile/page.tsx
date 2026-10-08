@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { useForm } from "react-hook-form";
 import { Term } from "../components/glossary";
 import { ErrorNote, LoadingNote, PageHeader } from "../components/ui";
 import {
@@ -20,6 +21,8 @@ type EditableKey =
   | "institution_name"
   | "institution_country_code"
   | "career_goal";
+
+type ProfileForm = Record<EditableKey, string>;
 
 const TEXT_FIELDS: { key: EditableKey; label: string; hint: string }[] = [
   { key: "current_degree", label: "Highest degree", hint: "e.g. B.Tech" },
@@ -84,10 +87,29 @@ export default function ProfilePage() {
   const queryClient = useQueryClient();
   const profile = useQuery({ queryKey: ["profile"], queryFn: getProfile });
   const completion = useQuery({ queryKey: ["completion"], queryFn: getCompletion });
-  const [form, setForm] = useState<Record<string, string>>({});
   const [validation, setValidation] = useState<ValidationOut | null>(null);
   const [saved, setSaved] = useState(false);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Client-side validation mirrors only what the backend enforces:
+  // institution_country_code is exactly 2 characters when provided
+  // (backend/schemas/profile.py min_length=2, max_length=2). Every other
+  // field is free text upstream, so we don't invent constraints for them.
+  const {
+    register,
+    handleSubmit,
+    reset,
+    formState: { errors },
+  } = useForm<ProfileForm>({
+    defaultValues: {
+      current_degree: "",
+      field_of_study: "",
+      institution_name: "",
+      institution_country_code: "",
+      career_goal: "",
+    },
+    mode: "onTouched",
+  });
 
   // Clear the "Saved." flash timer if the user navigates away mid-flash.
   useEffect(
@@ -99,7 +121,7 @@ export default function ProfilePage() {
 
   useEffect(() => {
     if (profile.data) {
-      setForm({
+      reset({
         current_degree: profile.data.current_degree ?? "",
         field_of_study: profile.data.field_of_study ?? "",
         institution_name: profile.data.institution_name ?? "",
@@ -107,12 +129,12 @@ export default function ProfilePage() {
         career_goal: profile.data.career_goal ?? "",
       });
     }
-  }, [profile.data]);
+  }, [profile.data, reset]);
 
   const save = useMutation({
-    mutationFn: () => {
+    mutationFn: (values: ProfileForm) => {
       const patch: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(form)) patch[k] = v === "" ? null : v;
+      for (const [k, v] of Object.entries(values)) patch[k] = v === "" ? null : v;
       return updateProfile(patch);
     },
     onSuccess: () => {
@@ -218,37 +240,61 @@ export default function ProfilePage() {
         <h2 className="display mb-4 border-b border-line pb-3 text-lg font-medium">
           Edit quick facts
         </h2>
-        <div className="grid gap-4 sm:grid-cols-2">
-          {TEXT_FIELDS.map((f) => (
-            <label key={f.key} className="flex flex-col gap-1">
-              <span className="label">{f.label}</span>
-              <input
-                className="field"
-                placeholder={f.hint}
-                value={form[f.key] ?? ""}
-                onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}
-              />
-            </label>
-          ))}
-        </div>
-        <div className="mt-4 flex flex-wrap items-center gap-3">
-          <button onClick={() => save.mutate()} disabled={save.isPending} className="btn-primary">
-            Save changes
-          </button>
-          <button
-            onClick={() => validate.mutate()}
-            disabled={validate.isPending}
-            className="btn-secondary"
-          >
-            Validate profile
-          </button>
-          {saved && (
-            <span role="status" className="text-sm text-forest">
-              Saved.
-            </span>
-          )}
-          {save.isError && <ErrorNote message={(save.error as Error).message} />}
-        </div>
+        <form noValidate onSubmit={handleSubmit((values) => save.mutate(values))}>
+          <div className="grid gap-4 sm:grid-cols-2">
+            {TEXT_FIELDS.map((f) => {
+              const error = errors[f.key];
+              const options =
+                f.key === "institution_country_code"
+                  ? {
+                      validate: (value: string) =>
+                        !value ||
+                        value.trim().length === 2 ||
+                        "Use the 2-letter country code, e.g. DE.",
+                    }
+                  : undefined;
+              return (
+                <label key={f.key} className="flex flex-col gap-1">
+                  <span className="label">{f.label}</span>
+                  <input
+                    className="field"
+                    placeholder={f.hint}
+                    aria-invalid={error ? true : undefined}
+                    {...register(f.key, options)}
+                  />
+                  {error && (
+                    <span className="text-xs text-danger" role="alert">
+                      {error.message}
+                    </span>
+                  )}
+                </label>
+              );
+            })}
+          </div>
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <button
+              type="submit"
+              disabled={save.isPending}
+              className="btn-primary"
+            >
+              {save.isPending ? "Saving…" : "Save changes"}
+            </button>
+            <button
+              type="button"
+              onClick={() => validate.mutate()}
+              disabled={validate.isPending}
+              className="btn-secondary"
+            >
+              Validate profile
+            </button>
+            {saved && (
+              <span role="status" className="text-sm text-forest">
+                Saved.
+              </span>
+            )}
+            {save.isError && <ErrorNote message={(save.error as Error).message} />}
+          </div>
+        </form>
         {validation && (
           <div className="mt-3 text-sm" role="status">
             {validation.valid ? (

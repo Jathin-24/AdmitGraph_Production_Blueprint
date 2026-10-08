@@ -60,8 +60,10 @@ export function ConfidencePill({ confidence }: { confidence: string }) {
 /** Evidence-level status copy (FRONTEND_SPEC §Evidence drawer: source conflict
  *  status must be obvious). Requirement-level copy stays in STATUS_COPY. */
 export const EVIDENCE_STATUS_COPY: Record<string, StatusSpec> = {
+  FRESH: { label: "Fresh", cls: "chip-good" },
   CURRENT: { label: "Current", cls: "chip-good" },
   STALE: { label: "Stale — may have changed", cls: "chip-warn" },
+  UNKNOWN: { label: "Not enough evidence yet", cls: "chip-neutral" },
   CONFLICTING: { label: "Conflicting information", cls: "chip-bad" },
   UNAVAILABLE: { label: "Source unavailable", cls: "chip-neutral" },
   NEEDS_VERIFICATION: { label: "Needs verification", cls: "chip-warn" },
@@ -70,6 +72,103 @@ export const EVIDENCE_STATUS_COPY: Record<string, StatusSpec> = {
 export function EvidenceStatusChip({ status }: { status: string }) {
   const s = EVIDENCE_STATUS_COPY[status] ?? statusSpec(status);
   return <span className={`chip ${s.cls}`}>{s.label}</span>;
+}
+
+/* --------------------------------------------------------------- severity */
+
+/** FRONTEND_SPEC §Risk UI — the only risk wording a student should see.
+ *  Keys are lower-case so "CRITICAL", "critical" and "High" all resolve. */
+export const SEVERITY_COPY: Record<string, string> = {
+  critical: "Do not apply yet",
+  high: "Fix before applying",
+  medium: "Verify before deciding",
+  low: "Good to know",
+};
+
+/** Friendly label + the existing chip visual (bad/warn/neutral). */
+export function severitySpec(severity: string): StatusSpec {
+  const key = (severity ?? "").toLowerCase();
+  const label = SEVERITY_COPY[key] ?? severity;
+  const cls =
+    key === "critical" || key === "high"
+      ? "chip-bad"
+      : key === "medium"
+        ? "chip-warn"
+        : "chip-neutral";
+  return { label, cls };
+}
+
+/** Risk severity chip: friendly copy is what you read, the raw backend value
+ *  stays discoverable (tooltip + aria-label, optionally as visible subtext). */
+export function SeverityChip({
+  severity,
+  showRaw = false,
+  className = "",
+}: {
+  severity: string;
+  showRaw?: boolean;
+  className?: string;
+}) {
+  const s = severitySpec(severity);
+  return (
+    <span className="inline-flex items-baseline gap-1.5">
+      <span
+        className={`chip ${s.cls} ${className}`}
+        title={`${severity} — ${s.label}`}
+        aria-label={`${severity}: ${s.label}`}
+      >
+        {s.label}
+      </span>
+      {showRaw && (
+        <span
+          aria-hidden
+          className="text-[10px] font-medium uppercase tracking-wide text-ink-faint"
+        >
+          {severity}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/* ------------------------------------------------------------ skeletons */
+
+/** One shimmering block for route-level loading states (FRONTEND_SPEC
+ *  §Performance: skeletons + route-level loading). */
+export function Skeleton({ className = "" }: { className?: string }) {
+  return <span aria-hidden className={`block animate-pulse rounded bg-line/70 ${className}`} />;
+}
+
+/** Stand-in page shell shown while a route's data resolves. */
+export function PageSkeleton({
+  sections = 3,
+  title = "Loading",
+}: {
+  sections?: number;
+  title?: string;
+}) {
+  return (
+    <main
+      className="mx-auto max-w-5xl space-y-6 px-5 py-8"
+      role="status"
+      aria-label={`${title} — loading`}
+    >
+      <header className="border-b border-line pb-6">
+        <Skeleton className="h-3 w-24" />
+        <Skeleton className="mt-3 h-8 w-72 max-w-full" />
+        <Skeleton className="mt-3 h-4 w-[32rem] max-w-full" />
+      </header>
+      {Array.from({ length: sections }).map((_, index) => (
+        <section key={index} className="card space-y-3 p-5">
+          <Skeleton className="h-4 w-44" />
+          <Skeleton className="h-3 w-full" />
+          <Skeleton className="h-3 w-11/12" />
+          <Skeleton className="h-3 w-2/3" />
+        </section>
+      ))}
+      <span className="sr-only">Loading…</span>
+    </main>
+  );
 }
 
 /* ------------------------------------------------------------ page parts */

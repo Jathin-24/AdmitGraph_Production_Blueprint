@@ -3,31 +3,55 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import type { FormEvent } from "react";
+import { useForm } from "react-hook-form";
 
 import { ErrorNote } from "../components/ui";
 import { register, setToken } from "../lib/api";
 
+interface RegisterForm {
+  full_name: string;
+  email: string;
+  password: string;
+}
+
+/** Mirrors ONLY what the backend enforces in auth.py (same copy as the API):
+ *  email must look like local@domain.tld, password ≥ 8 characters.
+ *  full_name is optional and unconstrained. */
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PASSWORD_MIN = 8;
+
+function safeNextPath(): string | null {
+  const params = new URLSearchParams(window.location.search);
+  const next = params.get("next");
+  if (next && next.startsWith("/") && !next.startsWith("//")) return next;
+  return null;
+}
+
 export default function RegisterPage() {
   const router = useRouter();
-  const [fullName, setFullName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  async function onSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
-    event.preventDefault();
+  const {
+    register: registerField,
+    handleSubmit,
+    formState: { errors },
+  } = useForm<RegisterForm>({
+    defaultValues: { full_name: "", email: "", password: "" },
+    mode: "onTouched",
+  });
+
+  async function onSubmit(values: RegisterForm): Promise<void> {
     setSubmitting(true);
     setError(null);
     try {
       const response = await register({
-        email,
-        password,
-        full_name: fullName.trim() || undefined,
+        email: values.email,
+        password: values.password,
+        full_name: values.full_name.trim() || undefined,
       });
       setToken(response.token);
-      router.push("/dashboard");
+      router.push(safeNextPath() ?? "/dashboard");
     } catch (e) {
       const message = e instanceof Error ? e.message : "Account creation failed";
       setError(
@@ -52,17 +76,15 @@ export default function RegisterPage() {
       </div>
 
       <div className="card p-6">
-        <form className="flex flex-col gap-5" onSubmit={onSubmit}>
+        <form className="flex flex-col gap-5" noValidate onSubmit={handleSubmit(onSubmit)}>
           <label className="flex flex-col gap-1.5">
             <span className="label">Full name (optional)</span>
             <input
               className="field"
               type="text"
-              name="full_name"
               autoComplete="name"
               placeholder="Ada Lovelace"
-              value={fullName}
-              onChange={(e) => setFullName(e.target.value)}
+              {...registerField("full_name")}
             />
           </label>
 
@@ -71,13 +93,22 @@ export default function RegisterPage() {
             <input
               className="field"
               type="email"
-              name="email"
               autoComplete="email"
-              required
               placeholder="you@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              aria-invalid={errors.email ? true : undefined}
+              {...registerField("email", {
+                required: "Email is required",
+                pattern: {
+                  value: EMAIL_PATTERN,
+                  message: "Enter a valid email address",
+                },
+              })}
             />
+            {errors.email && (
+              <span className="text-xs text-danger" role="alert">
+                {errors.email.message}
+              </span>
+            )}
           </label>
 
           <label className="flex flex-col gap-1.5">
@@ -85,18 +116,26 @@ export default function RegisterPage() {
             <input
               className="field"
               type="password"
-              name="password"
               autoComplete="new-password"
-              required
-              minLength={8}
               placeholder="At least 8 characters"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              aria-invalid={errors.password ? true : undefined}
+              {...registerField("password", {
+                required: "Password is required",
+                minLength: {
+                  value: PASSWORD_MIN,
+                  message: `Password must be at least ${PASSWORD_MIN} characters long`,
+                },
+              })}
             />
             <span className="hint">
               At least 8 characters. Longer passphrases work better than short
               complicated ones.
             </span>
+            {errors.password && (
+              <span className="text-xs text-danger" role="alert">
+                {errors.password.message}
+              </span>
+            )}
           </label>
 
           {error && <ErrorNote message={error} />}

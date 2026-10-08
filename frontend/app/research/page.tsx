@@ -26,6 +26,32 @@ const STEP_LABELS: Record<string, string> = {
   build_strategy: "Building strategy",
 };
 
+/** FRONTEND_SPEC §Research screen — the six stages a student sees. Several
+ *  backend steps roll up into one stage; a stage is only marked complete when
+ *  every backend event behind it reports SUCCEEDED (never faked). */
+const STAGES: { label: string; steps: string[] }[] = [
+  { label: "Understanding your profile", steps: ["validate_profile", "plan_queries"] },
+  { label: "Finding candidate programs", steps: ["discovery_search", "normalize_programs"] },
+  { label: "Verifying requirements", steps: ["extract_evidence"] },
+  { label: "Checking costs and deadlines", steps: ["evaluate_requirements"] },
+  { label: "Building risk profile", steps: ["score_fit", "assess_risks"] },
+  { label: "Building strategy", steps: ["build_strategy"] },
+];
+
+type StageStatus = "pending" | "running" | "done" | "failed";
+
+function stageStatuses(steps: ResearchStep[]): StageStatus[] {
+  const byKey = new Map(steps.map((s) => [s.step_key, s.status]));
+  return STAGES.map((stage) => {
+    const observed = stage.steps.map((key) => byKey.get(key));
+    if (observed.length === 0 || observed.every((s) => s === undefined)) return "pending";
+    if (observed.some((s) => s === "FAILED")) return "failed";
+    if (observed.every((s) => s === "SUCCEEDED")) return "done";
+    if (observed.some((s) => s === "RUNNING" || s === "PARTIAL")) return "running";
+    return "pending";
+  });
+}
+
 const TERMINAL = ["SUCCEEDED", "FAILED", "CANCELLED", "PARTIAL"];
 const ACTIVE = ["QUEUED", "RUNNING"];
 
@@ -193,6 +219,7 @@ export default function ResearchPage() {
   const ctasDisabled = runInFlight || starting !== null;
 
   const totals = researchTotals(steps);
+  const stageStates = stageStatuses(steps);
   const sourcesLine =
     totals.sources > 0 && totals.searches === 0
       ? isDemo
@@ -300,8 +327,70 @@ export default function ResearchPage() {
         </div>
       )}
 
-      {/* Timeline */}
-      <ol className="relative flex flex-col gap-0 border-l border-line pl-6" aria-live="polite">
+      {/* Six-stage progress — FRONTEND_SPEC §Research screen */}
+      <section className="card p-5" aria-label="Research stages">
+        <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2 border-b border-line pb-2">
+          <h2 className="display text-base font-medium">Research stages</h2>
+          <span className="text-xs text-ink-faint">Live research powered by SerpApi</span>
+        </div>
+        <ol className="flex flex-col gap-2.5">
+          {STAGES.map((stage, i) => {
+            const status = stageStates[i];
+            const glyph =
+              status === "done"
+                ? { mark: "✓", cls: "bg-forest text-white border-forest" }
+                : status === "running"
+                  ? { mark: "●", cls: "bg-white text-forest border-forest" }
+                  : status === "failed"
+                    ? { mark: "✕", cls: "bg-danger text-white border-danger" }
+                    : { mark: "○", cls: "bg-white text-ink-faint border-line-dark" };
+            return (
+              <li key={stage.label} className="flex items-center gap-3 text-sm">
+                <span
+                  aria-hidden
+                  className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[11px] ${glyph.cls}`}
+                >
+                  {glyph.mark}
+                </span>
+                <span
+                  className={
+                    status === "done"
+                      ? "text-ink"
+                      : status === "running"
+                        ? "font-medium text-forest"
+                        : status === "failed"
+                          ? "text-danger"
+                          : "text-ink-faint"
+                  }
+                >
+                  {stage.label}
+                </span>
+                <span className="sr-only">
+                  {status === "done"
+                    ? "completed"
+                    : status === "running"
+                      ? "in progress"
+                      : status === "failed"
+                        ? "failed"
+                        : "not started"}
+                </span>
+              </li>
+            );
+          })}
+        </ol>
+        <p className="mt-3 border-t border-line pt-2 text-xs text-ink-faint">
+          Stages only turn green when the backend reports the step finished — nothing here is
+          simulated.
+          {sourcesLine ? ` ${sourcesLine}.` : ""}
+        </p>
+      </section>
+
+      {/* Per-step detail (backend events) */}
+      <details className="card p-4">
+        <summary className="cursor-pointer text-sm font-medium text-ink-soft">
+          Step-by-step detail ({steps.length} backend events)
+        </summary>
+        <ol className="relative mt-3 flex flex-col gap-0 border-l border-line pl-6" aria-live="polite">
         {steps.map((s) => {
           const glyph = stepGlyph(s.status);
           return (
@@ -350,7 +439,8 @@ export default function ResearchPage() {
             <LoadingNote what="Waiting for the next step…" />
           </li>
         )}
-      </ol>
+        </ol>
+      </details>
 
       {runStatus === "FAILED" && (
         <div className="card border-danger/30 p-4" role="alert">

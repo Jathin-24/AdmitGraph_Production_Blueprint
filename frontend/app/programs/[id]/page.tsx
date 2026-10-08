@@ -11,10 +11,13 @@ import {
   EvidenceStatusChip,
   LoadingNote,
   Section,
+  SeverityChip,
   StatusPill,
   fmtDate,
   statusSpec,
 } from "../../components/ui";
+import { RecheckButton, ResolveConflictButton } from "../../components/evidence-actions";
+import { RiskActions } from "../../components/risk-actions";
 import {
   createSubscription,
   getEvidenceConflicts,
@@ -130,6 +133,11 @@ function ConflictDetail({ evidenceId }: { evidenceId: string }) {
                 Disagreeing evidence: {others.join(", ")}
               </span>
             )}
+            {!c.resolution_status && !c.resolved_at && (
+              <span className="mt-1 block">
+                <ResolveConflictButton conflictId={c.id} />
+              </span>
+            )}
           </li>
         );
       })}
@@ -159,6 +167,7 @@ function EvidenceRow({ e }: { e: EvidenceItem }) {
             Open source ↗
           </a>
         )}
+        <RecheckButton evidenceId={e.id} />
       </div>
       {e.status === "CONFLICTING" && (
         <button
@@ -481,10 +490,15 @@ export default function ProgramDetailPage() {
             ))}
             {risks.map((r) => (
               <li key={r.id} className="rounded-md border border-line bg-paper/60 p-3">
-                <span className="chip chip-warn mr-2">{r.severity}</span>
+                <SeverityChip severity={r.severity} showRaw className="mr-2" />
                 <span className="font-medium text-ink">{r.title}</span>
                 <p className="mt-1 text-ink-soft">{r.reason}</p>
                 <p className="mt-1 text-xs text-ink-faint">Next: {r.recommended_action}</p>
+                {latestId && (
+                  <div className="mt-2">
+                    <RiskActions strategyId={latestId} riskId={r.id} status={r.status} />
+                  </div>
+                )}
               </li>
             ))}
           </ul>

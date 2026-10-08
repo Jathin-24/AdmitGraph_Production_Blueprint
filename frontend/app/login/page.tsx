@@ -2,27 +2,60 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
-import type { FormEvent } from "react";
+import { useEffect, useState } from "react";
+import { useForm } from "react-hook-form";
 
 import { ErrorNote } from "../components/ui";
 import { login, setToken } from "../lib/api";
 
+interface LoginForm {
+  email: string;
+  password: string;
+}
+
+/** Mirrors ONLY what the backend enforces in auth.py:
+ *  an email must look like local@domain.tld (no spaces) and a password must
+ *  be at least MIN_PASSWORD_LENGTH (8) characters — same copy as the API. */
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PASSWORD_MIN = 8;
+
+function safeNextPath(): string | null {
+  const params = new URLSearchParams(window.location.search);
+  const next = params.get("next");
+  // Same-origin paths only — never redirect off-site after signing in.
+  if (next && next.startsWith("/") && !next.startsWith("//")) return next;
+  return null;
+}
+
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [expired, setExpired] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  async function onSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
-    event.preventDefault();
+  const {
+    register,
+    handleSubmit,
+    formState: { errors },
+  } = useForm<LoginForm>({
+    defaultValues: { email: "", password: "" },
+    mode: "onTouched",
+  });
+
+  // Deep-link state (?expired=1&next=…) is read after mount so the server and
+  // client render identical markup on first paint.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("expired")) setExpired(true);
+  }, []);
+
+  async function onSubmit(values: LoginForm): Promise<void> {
     setSubmitting(true);
     setError(null);
     try {
-      const response = await login({ email, password });
+      const response = await login(values);
       setToken(response.token);
-      router.push("/dashboard");
+      router.push(safeNextPath() ?? "/dashboard");
     } catch (e) {
       const message = e instanceof Error ? e.message : "Sign-in failed";
       setError(
@@ -47,19 +80,28 @@ export default function LoginPage() {
       </div>
 
       <div className="card p-6">
-        <form className="flex flex-col gap-5" onSubmit={onSubmit}>
+        <form className="flex flex-col gap-5" noValidate onSubmit={handleSubmit(onSubmit)}>
           <label className="flex flex-col gap-1.5">
             <span className="label">Email</span>
             <input
               className="field"
               type="email"
-              name="email"
               autoComplete="email"
-              required
               placeholder="you@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              aria-invalid={errors.email ? true : undefined}
+              {...register("email", {
+                required: "Email is required",
+                pattern: {
+                  value: EMAIL_PATTERN,
+                  message: "Enter a valid email address",
+                },
+              })}
             />
+            {errors.email && (
+              <span className="text-xs text-danger" role="alert">
+                {errors.email.message}
+              </span>
+            )}
           </label>
 
           <label className="flex flex-col gap-1.5">
@@ -67,15 +109,27 @@ export default function LoginPage() {
             <input
               className="field"
               type="password"
-              name="password"
               autoComplete="current-password"
-              required
               placeholder="Your password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              aria-invalid={errors.password ? true : undefined}
+              {...register("password", {
+                required: "Password is required",
+                minLength: {
+                  value: PASSWORD_MIN,
+                  message: `Password must be at least ${PASSWORD_MIN} characters long`,
+                },
+              })}
             />
+            {errors.password && (
+              <span className="text-xs text-danger" role="alert">
+                {errors.password.message}
+              </span>
+            )}
           </label>
 
+          {expired && (
+            <ErrorNote message="Session expired, please sign in again." />
+          )}
           {error && <ErrorNote message={error} />}
 
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
