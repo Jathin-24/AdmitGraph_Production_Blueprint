@@ -13,14 +13,22 @@ from app.db.models import (
     Evidence,
     EvidenceStatus,
     FitAssessment,
+    ProfilePreference,
     Program,
     Risk,
     RoadmapTask,
     StrategyRun,
+    StudentProfile,
+    TestScore,
 )
 from app.db.session import get_session
 from app.services.profile import get_or_create_profile
-from app.services.strategy.simulator import SCENARIOS, apply_scenario
+from app.services.strategy.simulator import (
+    SCENARIOS,
+    apply_scenario,
+    compute_delta,
+    recompute_portfolio,
+)
 
 router = APIRouter(tags=["strategies"])
 
@@ -269,27 +277,117 @@ async def export_strategy_pdf(
     )
 
 
+_SIMULATION_TOP_PRIORITY = 3
+
+
+async def _simulation_base(
+    session: AsyncSession, strategy: StrategyRun, profile: StudentProfile
+) -> dict[str, Any]:
+    """Snapshot a counterfactual starts from: profile facts + strategy context."""
+    prefs = (
+        (
+            await session.execute(
+                select(ProfilePreference).where(ProfilePreference.profile_id == profile.id)
+            )
+        )
+        .scalar_one_or_none()
+    )
+    english = (
+        (
+            await session.execute(
+                select(TestScore)
+                .where(
+                    TestScore.profile_id == profile.id,
+                    TestScore.test_type.in_(("english_overall", "IELTS", "IELTS_ACADEMIC")),
+                )
+                .order_by(TestScore.created_at.desc())
+            )
+        )
+        .scalars()
+        .first()
+    )
+    ielts_score: float | None = None
+    english_score: float | None = None
+    english_type: str | None = None
+    if english is not None and english.overall_score is not None:
+        english_score = float(english.overall_score)
+        english_type = english.test_type
+        if english.test_type.upper() in ("IELTS", "IELTS_ACADEMIC"):
+            ielts_score = english_score
+    plans = (
+        (
+            await session.execute(
+                select(ApplicationPlan).where(ApplicationPlan.strategy_run_id == strategy.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    category_rank = {"LOWER_RISK": 0, "TARGET": 1, "REACH": 2}
+    top_plans = sorted(
+        plans, key=lambda p: (category_rank.get(p.category.value, 9), p.priority)
+    )[:_SIMULATION_TOP_PRIORITY]
+    return {
+        "total_budget_amount": (
+            float(profile.total_budget_amount) if profile.total_budget_amount else None
+        ),
+        "budget_currency": profile.budget_currency,
+        "cgpa": float(profile.cgpa) if profile.cgpa is not None else None,
+        "cgpa_scale": float(profile.cgpa_scale) if profile.cgpa_scale is not None else None,
+        "percentage": float(profile.percentage) if profile.percentage is not None else None,
+        "backlogs": profile.backlogs or 0,
+        "graduation_year": profile.graduation_year,
+        "ielts_overall": ielts_score,
+        "english_test_overall": english_score,
+        "english_test_type": english_type,
+        "preferred_countries": list((prefs.preferred_countries if prefs else None) or []),
+        "top_priority_program_ids": [str(p.program_id) for p in top_plans],
+    }
+
+
 @router.post("/strategies/{strategy_id}/simulate")
 async def simulate(
     strategy_id: uuid.UUID, payload: dict[str, Any], session: AsyncSession = Depends(get_session)
 ) -> dict[str, Any]:
+    """Run a counterfactual: modify the profile, then re-tier what is known.
+
+    `portfolio_before` is this strategy's stored ApplicationPlan rows;
+    `portfolio_after` re-scores the strategy's own candidate programs with the
+    real scoring/selection helpers under the modified profile (a pure
+    computation — no plan rows are written and no research run is started);
+    `delta` diffs the two and explains the move in one sentence. The persisted
+    CounterfactualRun row (and its `counterfactual_run_id`) is unchanged.
+    """
     scenario = str(payload.get("scenario", "CUSTOM"))
     if scenario not in SCENARIOS:
         raise AppError(422, "VALIDATION_ERROR", f"Unknown scenario. Allowed: {sorted(SCENARIOS)}")
     strategy = await _get_strategy(session, strategy_id)
     profile = await get_or_create_profile(session)
-    base: dict[str, Any] = {
-        "total_budget_amount": float(profile.total_budget_amount) if profile.total_budget_amount else None,
-        "preferred_countries": [],
-    }
+    base = await _simulation_base(session, strategy, profile)
     modified = apply_scenario(base, scenario, payload.get("modifications"))
+    before = await _portfolio_rows(session, strategy_id)
+    after, scored = await recompute_portfolio(session, strategy, modified)
+    delta = compute_delta(before, after, scenario=scenario, candidates_scored=scored)
     run = CounterfactualRun(
         profile_id=profile.id,
         base_strategy_run_id=strategy.id,
         scenario_name=scenario,
         modified_profile=modified,
-        result={"scenario": scenario, "modified_budget": modified.get("total_budget_amount")},
+        result={
+            "scenario": scenario,
+            "modified_budget": modified.get("total_budget_amount"),
+            "portfolio_before": len(before),
+            "portfolio_after": len(after),
+            "delta_summary": delta["summary"],
+        },
     )
     session.add(run)
     await session.commit()
-    return {"counterfactual_run_id": str(run.id), "scenario": scenario, "modified_profile": modified}
+    return {
+        "counterfactual_run_id": str(run.id),
+        "scenario": scenario,
+        "modified_profile": modified,
+        "portfolio_before": before,
+        "portfolio_after": after,
+        "delta": delta,
+    }
