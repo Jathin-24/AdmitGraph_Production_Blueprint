@@ -71,6 +71,19 @@ def test_remove_country_records_the_dropped_country() -> None:
     ) is None
 
 
+def test_remove_country_honors_an_explicit_modification() -> None:
+    # An explicit `modifications` entry names the country to drop and wins
+    # over the preference order (API contract: REMOVE_COUNTRY + {country}).
+    out = apply_scenario(
+        {"preferred_countries": ["DE", "NL"]}, "REMOVE_COUNTRY", {"country": "NL"}
+    )
+    assert out["dropped_countries"] == ["NL"]
+    assert out["preferred_countries"] == ["DE"]
+    assert apply_scenario({"preferred_countries": ["DE"]}, "REMOVE_COUNTRY", {"country": ""})[
+        "dropped_countries"
+    ] == ["DE"]
+
+
 def test_top_3_rejected_is_a_real_transformation() -> None:
     snapshot = {"cgpa": 8.0, "top_priority_program_ids": ["p1", "p2", "p3", "p4"]}
     original = dict(snapshot)
@@ -235,7 +248,11 @@ async def _build_strategy(db_session: Any) -> tuple[StrategyRun, list[Program]]:
         requirements = [
             # 7.6 keeps base (CGPA 8.0) satisfied and the +0.5 bar above it.
             ("academic", "Minimum CGPA", "academic_cgpa_min", {"min": 7.6}),
-            ("language", "IELTS overall", "language_ielts_overall", {"min": 7.0}),
+            # The language bar sits AT the reported score: one band lower
+            # (the IELTS_LOWERED scenario) then fails it outright instead of
+            # landing inside the 0.5 "partial" band, so the counterfactual is
+            # visible in the re-tier.
+            ("language", "IELTS overall", "language_ielts_overall", {"min": 7.5}),
         ]
         if country in ("DE",):  # only Alpha/Beta carry the expensive tuition
             requirements.append(
@@ -409,6 +426,25 @@ async def test_remove_country_drops_only_that_country(db_session: Any) -> None:
     assert str(programs[1].id) not in by_id  # Beta (DE)
     assert str(programs[2].id) in by_id  # Gamma (NL) stays
     assert modified["dropped_countries"] == ["DE"]
+
+
+async def test_remove_country_with_explicit_modification_drops_that_country(
+    db_session: Any,
+) -> None:
+    """The API's explicit `modifications.country` beats the preference order."""
+    strategy, programs = await _build_strategy(db_session)
+    profile = await get_or_create_profile(db_session)
+    base = await _simulation_base(db_session, strategy, profile)
+    modified = apply_scenario(base, "REMOVE_COUNTRY", {"country": "NL"})
+    assert modified["dropped_countries"] == ["NL"]
+
+    after, _scored = await recompute_portfolio(db_session, strategy, modified)
+    by_id = {row["program_id"]: row for row in after}
+    assert str(programs[2].id) not in by_id  # Gamma (NL) removed on request
+    assert str(programs[3].id) not in by_id  # Delta (NL)
+    assert str(programs[0].id) in by_id  # Alpha (DE) untouched
+    # Pure recompute: the stored plan is still exactly as built.
+    assert len(await _plan_ids(db_session, strategy)) == 4
 
 
 async def test_simulate_endpoint_returns_before_after_and_delta(db_session: Any) -> None:

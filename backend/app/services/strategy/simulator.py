@@ -16,9 +16,12 @@ IELTS_LOWERED            one band lower: the English score - 1.0 (floor 0).
 REMOVE_COUNTRY           the first preferred country is dropped and, during
                           regeneration, every program inside that country
                           (recorded as ``dropped_countries``) leaves the
-                          candidate pool. Country names resolve through the
-                          countries table; anything we cannot resolve disables
-                          the filter — we never drop a program on a guess.
+                          candidate pool. An explicit ``modifications`` entry
+                          ``{"country": "..."}`` names the country to drop and
+                          wins over the preference order. Country names resolve
+                          through the countries table; anything we cannot
+                          resolve disables the filter — we never drop a program
+                          on a guess.
 DEADLINE_MISSED          the upcoming deadline slips: programs that publish an
                           application-deadline requirement are scored
                           NOT_SATISFIED on the timing dimension; programs
@@ -59,6 +62,7 @@ from sqlalchemy.orm import selectinload
 from app.db.models import (
     ApplicationPlan,
     Country,
+    Evidence,
     FitAssessment,
     Program,
     ProgramCategory,
@@ -68,6 +72,11 @@ from app.db.models import (
 )
 from app.services.matching.evaluator import ProfileFacts, evaluate
 from app.services.scoring.scorer import DimensionInput, overall_score
+from app.services.strategy.persist import (
+    evidence_dimension_statuses,
+    portfolio_risk_stats,
+    programs_with_passed_deadlines,
+)
 from app.services.strategy.portfolio import Candidate, build_portfolio
 
 SCENARIOS = {
@@ -105,7 +114,6 @@ _DIMENSION_BY_REQUIREMENT_TYPE: dict[str, str] = {
     "fees": "financial",
     "budget": "financial",
 }
-_UNKNOWN_DIMENSIONS = ("career", "evidence_confidence")
 
 
 def apply_scenario(
@@ -123,8 +131,15 @@ def apply_scenario(
         if score is not None:
             modified[key] = max(0.0, float(score) - 1.0)
     elif scenario == "REMOVE_COUNTRY":
+        explicit = str((extra or {}).get("country") or "").strip()
         countries = list(modified.get("preferred_countries") or [])
-        if countries:
+        if explicit:
+            # The caller named the country to drop (API `modifications`), so it
+            # wins over the preference list: the scenario removes THAT country
+            # even when it is not the first preference.
+            modified["dropped_countries"] = [explicit]
+            modified["preferred_countries"] = [c for c in countries if str(c).strip() != explicit]
+        elif countries:
             modified["preferred_countries"] = countries[1:]
             # Explicit, scenario-owned list: only the country the student just
             # removed is filtered out of the regenerated portfolio.
@@ -220,18 +235,26 @@ def _requirement_status(
 
 
 def _score_program(
-    requirements: list[Requirement], facts: ProfileFacts, modified: dict[str, Any]
+    requirements: list[Requirement],
+    facts: ProfileFacts,
+    modified: dict[str, Any],
+    evidence_statuses: dict[str, RequirementStatus],
 ) -> Decimal:
-    """Score one program with the real scorer, wired like persist.step_score_fit."""
+    """Score one program with the real scorer, wired like persist.step_score_fit.
+
+    `evidence_statuses` carries the career/timing/evidence-confidence inputs
+    derived from stored evidence — the same derivation the pipeline persists,
+    so a recompute mirrors the stored strategy instead of assuming UNKNOWN.
+    """
     by_dimension: dict[str, list[RequirementStatus]] = {}
-    timing: list[RequirementStatus] = [RequirementStatus.UNKNOWN]
+    timing = evidence_statuses.get("timing", RequirementStatus.UNKNOWN)
     for req in requirements:
         if _is_deadline_requirement(req):
-            # Baseline timing stays UNKNOWN (matching the stored strategy);
-            # the scenario may flip it once, and only for programs that
-            # actually publish a deadline.
+            # Baseline timing comes from the evidence (matching the stored
+            # strategy); the scenario may flip it once, and only for programs
+            # that actually publish a deadline.
             if modified.get("assume_deadline_missed"):
-                timing = [RequirementStatus.NOT_SATISFIED]
+                timing = RequirementStatus.NOT_SATISFIED
             continue
         dimension = _DIMENSION_BY_REQUIREMENT_TYPE.get(req.requirement_type)
         if dimension is None:
@@ -246,9 +269,14 @@ def _score_program(
         ),
         DimensionInput("language", by_dimension.get("language") or [RequirementStatus.UNKNOWN]),
         DimensionInput("financial", by_dimension.get("financial") or [RequirementStatus.UNKNOWN]),
-        DimensionInput("career", [RequirementStatus.UNKNOWN]),
-        DimensionInput("timing", timing),
-        DimensionInput("evidence_confidence", [RequirementStatus.UNKNOWN]),
+        DimensionInput(
+            "career", [evidence_statuses.get("career", RequirementStatus.UNKNOWN)]
+        ),
+        DimensionInput("timing", [timing]),
+        DimensionInput(
+            "evidence_confidence",
+            [evidence_statuses.get("evidence_confidence", RequirementStatus.UNKNOWN)],
+        ),
     ]
     score, _subscores = overall_score(dims)
     return score
@@ -354,6 +382,28 @@ async def recompute_portfolio(
     facts = _facts_from(modified)
     dropped_codes = await _dropped_country_codes(session, modified.get("dropped_countries"))
 
+    # Same inputs the pipeline persists: evidence-derived dimension statuses,
+    # open risks per program, and programs whose deadlines all passed.
+    evidence_by_program: dict[UUID, list[Evidence]] = {}
+    if candidate_ids:
+        evidence_rows = (
+            (
+                await session.execute(
+                    select(Evidence).where(
+                        Evidence.subject_type == "program",
+                        Evidence.subject_id.in_(candidate_ids),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in evidence_rows:
+            if row.subject_id is not None:
+                evidence_by_program.setdefault(row.subject_id, []).append(row)
+    passed_deadlines = await programs_with_passed_deadlines(session, set(candidate_ids))
+    risk_stats = await portfolio_risk_stats(session, strategy.profile_id)
+
     candidates: list[Candidate] = []
     for program_id in candidate_ids:
         program = by_program.get(program_id)
@@ -365,15 +415,30 @@ async def recompute_portfolio(
             and program.country_code.upper() in dropped_codes
         ):
             continue
-        score = _score_program(reqs_by_program.get(program_id, []), facts, modified)
-        candidates.append(Candidate(program_id=str(program_id), fit_score=score))
+        if program_id in passed_deadlines:
+            # TEST_PLAN "Deadline passed -> program excluded": the counterfactual
+            # portfolio follows the same rule as the stored one.
+            continue
+        statuses = evidence_dimension_statuses(evidence_by_program.get(program_id, []))
+        score = _score_program(reqs_by_program.get(program_id, []), facts, modified, statuses)
+        stats = risk_stats.get(program_id)
+        candidates.append(
+            Candidate(
+                program_id=str(program_id),
+                fit_score=score,
+                risk_count=stats[0] if stats else 0,
+                top_risk_severity=stats[1] if stats else None,
+                institution_id=str(program.institution_id),
+                country_code=program.country_code,
+            )
+        )
 
     if not candidates:
         return [], 0
 
     portfolio = build_portfolio(candidates)
     rows: list[dict[str, Any]] = []
-    for category, items in portfolio.items():
+    for category, items in portfolio.tiers.items():
         for index, cand in enumerate(items):
             program = by_program.get(UUID(cand.program_id))
             if program is None:
