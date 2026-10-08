@@ -19,7 +19,6 @@ from functools import lru_cache
 
 from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,6 +34,7 @@ from app.core.security import (
     verify_password,
 )
 from app.db.models import User, UserRole
+from app.db.repositories import auth as auth_repo
 from app.db.session import get_session
 from app.services.profile import get_or_create_profile
 
@@ -138,26 +138,25 @@ async def register(payload: RegisterInput, session: AsyncSession = Depends(get_s
     password = _validate_password(payload.password)
     full_name = payload.full_name.strip() if payload.full_name and payload.full_name.strip() else None
 
-    existing = await session.execute(select(User).where(User.email == email))
-    if existing.scalar_one_or_none() is not None:
+    existing = await auth_repo.get_user_by_email(session, email)
+    if existing is not None:
         raise AppError(409, "EMAIL_TAKEN", EMAIL_TAKEN_MESSAGE)
 
     role = _role_for_email(email)
     user = User(email=email, full_name=full_name, password_hash=hash_password(password), role=role)
     try:
-        session.add(user)
-        await session.flush()
+        await auth_repo.add_user(session, user)
         # Eagerly create the profile so GET /me/profile works immediately
         # after registration (ContextVar routes the service to this user).
         tokens = set_request_user(user.id, str(role))
         try:
             await get_or_create_profile(session)
-            await session.commit()
+            await auth_repo.commit(session)
         finally:
             reset_request_user(tokens)
     except IntegrityError:
         # Unique-index race with a concurrent register for the same email.
-        await session.rollback()
+        await auth_repo.rollback(session)
         raise AppError(409, "EMAIL_TAKEN", EMAIL_TAKEN_MESSAGE) from None
 
     emit("user.registered", user_id=user.id, email=user.email, full_name=user.full_name)
@@ -169,8 +168,7 @@ async def login(payload: LoginInput, session: AsyncSession = Depends(get_session
     email = _validate_email(payload.email)
     password = _validate_password(payload.password)
 
-    result = await session.execute(select(User).where(User.email == email))
-    user = result.scalar_one_or_none()
+    user = await auth_repo.get_user_by_email(session, email)
     stored_hash = user.password_hash if user is not None else None
     # Unknown email still runs one Argon2 verify (decoy) so response time does
     # not reveal which accounts exist.
@@ -187,7 +185,7 @@ async def me(session: AsyncSession = Depends(get_session)) -> MeResponse:
     uid = current_user_id()  # set by middleware only when a Bearer token was sent
     if uid is None:
         raise AppError(401, "UNAUTHENTICATED", "Authentication required")
-    user = await session.get(User, uid)
+    user = await auth_repo.get_user(session, uid)
     if user is None:
         # Token minted for a since-deleted account.
         raise AppError(401, "UNAUTHENTICATED", "Authentication required")

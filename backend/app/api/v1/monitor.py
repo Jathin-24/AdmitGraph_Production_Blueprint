@@ -7,11 +7,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError
-from app.db.models import MonitorSnapshot, MonitorSubscription, Program
+from app.db.models import MonitorSubscription
+from app.db.repositories import monitor as monitor_repo
 from app.db.session import get_session
 from app.services.monitoring.materiality import FIELD_KEYS, FREQUENCY_DELTAS, next_check_time
 from app.services.monitoring.service import (
@@ -57,19 +57,14 @@ async def create_subscription(
         frequency=frequency,
         next_check_at=next_check_time(datetime.now(UTC), frequency),
     )
-    session.add(sub)
-    await session.commit()
+    await monitor_repo.add_subscription(session, sub)
     return {"id": str(sub.id)}
 
 
 @router.get("/monitor/subscriptions")
 async def list_subscriptions(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
-    rows = (
-        await session.execute(
-            select(MonitorSubscription, Program)
-            .outerjoin(Program, MonitorSubscription.program_id == Program.id)
-        )
-    ).all()
+    profile = await get_or_create_profile(session)
+    rows = await monitor_repo.list_subscriptions(session, profile.id)
     return {
         "items": [
             {
@@ -91,7 +86,12 @@ async def list_subscriptions(session: AsyncSession = Depends(get_session)) -> di
 async def run_check(
     subscription_id: uuid.UUID, session: AsyncSession = Depends(get_session)
 ) -> dict[str, Any]:
-    snapshot = await MonitoringService().run_check(session, subscription_id)
+    # Owner scoping: another user's subscription is indistinguishable from a
+    # missing one (404), enforced inside MonitoringService.run_check.
+    profile = await get_or_create_profile(session)
+    snapshot = await MonitoringService().run_check(
+        session, subscription_id, owner_profile_id=profile.id
+    )
     explanation = await explanation_for_snapshot(session, snapshot, include_immaterial=True)
     return {
         "id": str(snapshot.id),
@@ -107,12 +107,13 @@ async def run_check(
 async def changes(
     subscription_id: uuid.UUID, session: AsyncSession = Depends(get_session)
 ) -> dict[str, Any]:
-    result = await session.execute(
-        select(MonitorSnapshot)
-        .where(MonitorSnapshot.subscription_id == subscription_id)
-        .order_by(MonitorSnapshot.checked_at.desc())
-    )
-    snapshots = list(result.scalars().all())
+    # Snapshot history is scoped through its subscription: a foreign or
+    # unknown subscription id is a 404, never an empty 200 (cross-user probe).
+    profile = await get_or_create_profile(session)
+    subscription = await monitor_repo.get_subscription(session, subscription_id)
+    if subscription is None or subscription.profile_id != profile.id:
+        raise AppError(404, "NOT_FOUND", "Monitor subscription not found")
+    snapshots = await monitor_repo.list_snapshots(session, subscription_id)
     explanations = await explanations_for_snapshots(session, snapshots)
     return {
         "items": [

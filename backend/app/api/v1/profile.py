@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.repositories import profile as profile_repo
 from app.db.session import get_session
 from app.schemas.profile import (
     CompletionOut,
@@ -17,7 +18,7 @@ router = APIRouter(tags=["profile"])
 @router.get("/me/profile", response_model=ProfileOut)
 async def get_profile(session: AsyncSession = Depends(get_session)) -> ProfileOut:
     profile = await profile_service.get_or_create_profile(session)
-    await session.commit()
+    await profile_repo.commit(session)
     return ProfileOut.model_validate(profile)
 
 

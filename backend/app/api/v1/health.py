@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.repositories import health as health_repo
 from app.db.session import get_session
 
 router = APIRouter(tags=["health"])
@@ -15,7 +15,7 @@ async def health() -> dict[str, str]:
 @router.get("/health/ready")
 async def ready(session: AsyncSession = Depends(get_session)) -> dict[str, str]:
     try:
-        await session.execute(text("SELECT 1"))
+        await health_repo.ping(session)
     except Exception:
         return {"status": "unavailable"}
     return {"status": "ready"}

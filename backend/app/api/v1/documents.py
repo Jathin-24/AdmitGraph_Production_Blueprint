@@ -2,11 +2,11 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError
 from app.db.models import Document, TaskStatus
+from app.db.repositories import documents as documents_repo
 from app.db.session import get_session
 from app.services.profile import get_or_create_profile
 
@@ -37,7 +37,7 @@ async def _owned_document(session: AsyncSession, document_id: uuid.UUID) -> Docu
     id is indistinguishable from a non-existent one.
     """
     profile = await get_or_create_profile(session)
-    doc = await session.get(Document, document_id)
+    doc = await documents_repo.get_document(session, document_id)
     if doc is None or doc.profile_id != profile.id:
         raise AppError(404, "NOT_FOUND", "Document not found")
     return doc
@@ -46,22 +46,21 @@ async def _owned_document(session: AsyncSession, document_id: uuid.UUID) -> Docu
 @router.get("/documents")
 async def list_documents(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     profile = await get_or_create_profile(session)
-    query = (
-        select(Document).where(Document.profile_id == profile.id).order_by(Document.created_at)
-    )
-    rows = list((await session.execute(query)).scalars().all())
+    rows = await documents_repo.list_documents(session, profile.id)
 
     # Lazily provision any missing checklist items for this profile so the
     # readiness panel always reflects the full set of application documents.
     present = {_norm_doc_type(d.document_type) for d in rows}
     missing = [t for t in READINESS_CHECKLIST if t not in present]
     if missing:
-        for doc_type in missing:
-            session.add(
+        await documents_repo.add_documents(
+            session,
+            [
                 Document(profile_id=profile.id, document_type=doc_type, status=TaskStatus.TODO)
-            )
-        await session.commit()
-        rows = list((await session.execute(query)).scalars().all())
+                for doc_type in missing
+            ],
+        )
+        rows = await documents_repo.list_documents(session, profile.id)
 
     return {
         "items": [
@@ -84,8 +83,7 @@ async def create_document(
     doc = Document(
         profile_id=profile.id, document_type=str(payload["document_type"]), notes=payload.get("notes")
     )
-    session.add(doc)
-    await session.commit()
+    await documents_repo.add_documents(session, [doc])
     return {"id": str(doc.id), "document_type": doc.document_type, "status": doc.status.value}
 
 
@@ -98,5 +96,5 @@ async def update_document(
         doc.status = TaskStatus(payload["status"])
     if "notes" in payload:
         doc.notes = payload["notes"]
-    await session.commit()
+    await documents_repo.commit(session)
     return {"id": str(doc.id), "status": doc.status.value}

@@ -11,12 +11,12 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError
 from app.core.security import current_user_role
-from app.db.models import ResearchPlan, ResearchPlanStep, RunStatus, SearchRun
+from app.db.models import RunStatus
+from app.db.repositories import admin as admin_repo
 from app.db.session import get_session
 from app.services.profile import get_or_create_default_user
 
@@ -41,30 +41,10 @@ router = APIRouter(tags=["admin"], dependencies=[Depends(require_admin_access)])
 @router.get("/admin/search-usage")
 async def search_usage(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     """Aggregated SerpApi usage. Contains no keys, URLs-with-tokens or payloads."""
-    total = (
-        await session.execute(select(func.count()).select_from(SearchRun))
-    ).scalar_one()
-    by_engine_rows = (
-        await session.execute(
-            select(SearchRun.engine, func.count()).group_by(SearchRun.engine).order_by(SearchRun.engine)
-        )
-    ).all()
-    by_status_rows = (
-        await session.execute(
-            select(SearchRun.status, func.count()).group_by(SearchRun.status).order_by(SearchRun.status)
-        )
-    ).all()
-    agg = (
-        await session.execute(
-            select(
-                func.count(SearchRun.id),
-                func.coalesce(func.sum(SearchRun.result_count), 0),
-                func.coalesce(func.sum(SearchRun.duration_ms), 0),
-                func.coalesce(func.count(SearchRun.id).filter(SearchRun.cache_hit.is_(True)), 0),
-            )
-        )
-    ).one()
-    searches, results, duration_ms, cache_hits = agg
+    total = await admin_repo.count_search_runs(session)
+    by_engine_rows = await admin_repo.search_runs_by_engine(session)
+    by_status_rows = await admin_repo.search_runs_by_status(session)
+    searches, results, duration_ms, cache_hits = await admin_repo.search_usage_totals(session)
     searches = int(searches or 0)
     results = int(results or 0)
     duration_ms = int(duration_ms or 0)
@@ -88,22 +68,11 @@ async def research_runs(
     page_size: int = Query(20, ge=1, le=100),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    total = (await session.execute(select(func.count()).select_from(ResearchPlan))).scalar_one()
-    plans = (
-        await session.execute(
-            select(ResearchPlan)
-            .order_by(ResearchPlan.created_at.desc())
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-        )
-    ).scalars().all()
+    total = await admin_repo.count_research_plans(session)
+    plans = await admin_repo.list_research_plans(session, (page - 1) * page_size, page_size)
     items: list[dict[str, Any]] = []
     for plan in plans:
-        steps = (
-            await session.execute(
-                select(ResearchPlanStep).where(ResearchPlanStep.research_plan_id == plan.id)
-            )
-        ).scalars().all()
+        steps = await admin_repo.list_plan_steps(session, plan.id)
         items.append(
             {
                 "id": str(plan.id),

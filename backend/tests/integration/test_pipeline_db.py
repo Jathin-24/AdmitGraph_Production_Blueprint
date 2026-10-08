@@ -285,7 +285,17 @@ async def test_strategy_persistence_steps_end_to_end(db_session: Any) -> None:
 
     # Explanations are user-facing: human-readable copy, never raw dicts,
     # and always restating that fit is not an admission probability.
-    fit = (await db_session.execute(select(FitAssessment))).scalars().first()
+    # Scoped to THIS test's program: the scratch DB is shared across tests,
+    # so an unscoped .first() would depend on which test ran before this one.
+    fit = (
+        (
+            await db_session.execute(
+                select(FitAssessment).where(FitAssessment.program_id == program.id)
+            )
+        )
+        .scalars()
+        .first()
+    )
     assert fit is not None and fit.explanation
     assert not fit.explanation.startswith("subscores=")
     assert "not an admission probability" in fit.explanation
@@ -312,11 +322,11 @@ async def test_strategy_persistence_steps_end_to_end(db_session: Any) -> None:
 async def test_full_orchestrator_run_with_fake_search(db_session: Any) -> None:
     from app.services.research.orchestrator import ResearchService
 
-    profile = await get_or_create_profile(db_session)
-    # Onboarding normally fills these; a bare profile has no country to search,
-    # so the planner would emit zero discovery queries.
-    profile.institution_country_code = "DE"
-    await db_session.commit()
+    # Self-seeding: this test must pass on its own, not only when an earlier
+    # test happened to fill the shared demo profile. `_ensure_valid_profile`
+    # guarantees a valid CGPA/percentage (otherwise validate_profile fails the
+    # run) and a search country (otherwise the planner emits zero queries).
+    profile = await _ensure_valid_profile(db_session)
     funding_before = Counter(await _funding_queries(db_session))
     service = ResearchService(serpapi=FakeSerpApi())
     plan = await service.create_plan(db_session, profile.id, {"intake_year": 2027})

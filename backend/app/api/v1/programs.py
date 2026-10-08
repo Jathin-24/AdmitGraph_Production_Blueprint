@@ -7,11 +7,11 @@ from collections.abc import Sequence
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError
-from app.db.models import Evidence, Program, Requirement, SavedProgram, Source
+from app.db.models import Evidence, Program, SavedProgram, Source
+from app.db.repositories import programs as programs_repo
 from app.db.session import get_session
 from app.services.profile import get_or_create_profile
 
@@ -26,17 +26,9 @@ async def list_programs(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     profile = await get_or_create_profile(session)
-    query = select(Program)
-    if saved_only:
-        query = query.join(SavedProgram, SavedProgram.program_id == Program.id).where(
-            SavedProgram.profile_id == profile.id
-        )
-    total = (await session.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
-    rows = (
-        await session.execute(
-            query.order_by(Program.canonical_name).offset((page - 1) * page_size).limit(page_size)
-        )
-    ).scalars().all()
+    total, rows = await programs_repo.list_programs(
+        session, profile.id, saved_only, (page - 1) * page_size, page_size
+    )
     has_more = page * page_size < total
     return {
         "items": [
@@ -58,7 +50,7 @@ async def list_programs(
 
 
 async def _get_program(session: AsyncSession, program_id: uuid.UUID) -> Program:
-    program = await session.get(Program, program_id)
+    program = await programs_repo.get_program_by_id(session, program_id)
     if program is None:
         raise AppError(404, "NOT_FOUND", "Program not found")
     return program
@@ -68,27 +60,11 @@ async def _get_program(session: AsyncSession, program_id: uuid.UUID) -> Program:
 async def get_program(
     program_id: uuid.UUID, session: AsyncSession = Depends(get_session)
 ) -> dict[str, Any]:
-    from sqlalchemy.orm import selectinload
-
-    program = (
-        await session.execute(
-            select(Program).where(Program.id == program_id).options(selectinload(Program.institution))
-        )
-    ).scalar_one_or_none()
+    program = await programs_repo.get_program_with_institution(session, program_id)
     if program is None:
         raise AppError(404, "NOT_FOUND", "Program not found")
-    req_count = (
-        await session.execute(
-            select(func.count()).select_from(Requirement).where(Requirement.program_id == program_id)
-        )
-    ).scalar_one()
-    ev_count = (
-        await session.execute(
-            select(func.count())
-            .select_from(Evidence)
-            .where(Evidence.subject_type == "program", Evidence.subject_id == program_id)
-        )
-    ).scalar_one()
+    req_count = await programs_repo.count_requirements(session, program_id)
+    ev_count = await programs_repo.count_program_evidence(session, program_id)
     return {
         "id": str(program.id),
         "name": program.canonical_name,
@@ -116,24 +92,10 @@ async def get_program_requirements(
     program_id: uuid.UUID, session: AsyncSession = Depends(get_session)
 ) -> dict[str, Any]:
     await _get_program(session, program_id)
-    rows = (
-        await session.execute(
-            select(Requirement)
-            .where(Requirement.program_id == program_id)
-            .order_by(Requirement.normalized_key)
-        )
-    ).scalars().all()
+    rows = await programs_repo.list_requirements(session, program_id)
     # Best-effort evidence join: evidence for this program sharing the
     # requirement's normalized key (MASTER_SPEC §7: requirements carry refs).
-    evidence_rows = (
-        await session.execute(
-            select(Evidence.normalized_claim, Evidence.id).where(
-                Evidence.subject_type == "program",
-                Evidence.subject_id == program_id,
-                Evidence.normalized_claim.is_not(None),
-            )
-        )
-    ).all()
+    evidence_rows = await programs_repo.list_program_evidence_claims(session, program_id)
     evidence_by_key: dict[str, list[str]] = {}
     for key, evidence_id in evidence_rows:
         evidence_by_key.setdefault(str(key), []).append(str(evidence_id))
@@ -161,15 +123,7 @@ async def get_program_evidence(
     program_id: uuid.UUID, session: AsyncSession = Depends(get_session)
 ) -> dict[str, Any]:
     await _get_program(session, program_id)
-    rows = (
-        await session.execute(
-            select(Evidence, Source)
-            .join(Source, Evidence.source_id == Source.id, isouter=True)
-            .where(Evidence.subject_type == "program", Evidence.subject_id == program_id)
-            .order_by(Evidence.retrieved_at.desc())
-            .limit(100)
-        )
-    ).all()
+    rows = await programs_repo.list_program_evidence(session, program_id)
     return {"items": _evidence_rows(rows)}
 
 
@@ -202,17 +156,11 @@ async def save_program(
 ) -> dict[str, Any]:
     await _get_program(session, program_id)
     profile = await get_or_create_profile(session)
-    existing = (
-        await session.execute(
-            select(SavedProgram).where(
-                SavedProgram.profile_id == profile.id, SavedProgram.program_id == program_id
-            )
-        )
-    ).scalar_one_or_none()
+    existing = await programs_repo.get_saved_program(session, profile.id, program_id)
     if existing is None:
-        existing = SavedProgram(profile_id=profile.id, program_id=program_id)
-        session.add(existing)
-        await session.commit()
+        await programs_repo.save_program(
+            session, SavedProgram(profile_id=profile.id, program_id=program_id)
+        )
     return {"saved": True, "program_id": str(program_id)}
 
 
@@ -221,14 +169,7 @@ async def unsave_program(
     program_id: uuid.UUID, session: AsyncSession = Depends(get_session)
 ) -> dict[str, Any]:
     profile = await get_or_create_profile(session)
-    row = (
-        await session.execute(
-            select(SavedProgram).where(
-                SavedProgram.profile_id == profile.id, SavedProgram.program_id == program_id
-            )
-        )
-    ).scalar_one_or_none()
+    row = await programs_repo.get_saved_program(session, profile.id, program_id)
     if row is not None:
-        await session.delete(row)
-        await session.commit()
+        await programs_repo.delete_saved_program(session, row)
     return {"saved": False, "program_id": str(program_id)}
