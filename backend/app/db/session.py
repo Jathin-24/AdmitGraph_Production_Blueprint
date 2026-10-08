@@ -33,12 +33,21 @@ def dispose_engine() -> None:
     if engine is not None:
         import asyncio
 
+        async def _quiet_dispose(target: AsyncEngine) -> None:
+            # Best-effort: connections created on an already-closed event
+            # loop raise on close; never surface that as an unhandled task
+            # exception (the pool is abandoned either way).
+            try:
+                await target.dispose()
+            except Exception:  # noqa: BLE001
+                pass
+
         try:
             loop = asyncio.get_event_loop()
         except RuntimeError:
-            asyncio.run(engine.dispose())
+            asyncio.run(_quiet_dispose(engine))
         else:
-            loop.create_task(engine.dispose())
+            loop.create_task(_quiet_dispose(engine))
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:

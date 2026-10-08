@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import io
 from datetime import UTC, datetime
 from typing import Any
@@ -45,7 +46,10 @@ def _styles() -> dict[str, ParagraphStyle]:
 
 
 def _cell(text: Any, style: ParagraphStyle) -> Paragraph:
-    return Paragraph(str(text) if text is not None else "—", style)
+    # DB strings reach Paragraph untrusted: escape them so a program name
+    # containing markup ('<b>', '&') renders literally instead of being
+    # parsed as ReportLab markup (BACKEND_SPEC §Security: sanitize HTML).
+    return Paragraph(html.escape(str(text)) if text is not None else "—", style)
 
 
 def render_strategy_pdf(payload: dict[str, Any]) -> bytes:
@@ -66,9 +70,11 @@ def render_strategy_pdf(payload: dict[str, Any]) -> bytes:
     generated = datetime.now(UTC).isoformat(timespec="seconds")
     story.append(
         Paragraph(
-            f"Strategy {payload.get('strategy_id')} · generated {generated} "
-            f"· plan health {payload.get('plan_health_score') or 'n/a'} · "
-            f"scoring {payload.get('scoring_version')} · {payload.get('summary') or ''}",
+            html.escape(
+                f"Strategy {payload.get('strategy_id')} · generated {generated} "
+                f"· plan health {payload.get('plan_health_score') or 'n/a'} · "
+                f"scoring {payload.get('scoring_version')} · {payload.get('summary') or ''}"
+            ),
             s["meta"],
         )
     )
@@ -142,7 +148,7 @@ def render_strategy_pdf(payload: dict[str, Any]) -> bytes:
     if tasks:
         for t in tasks:
             due = f" — due {t['due_date']}" if t.get("due_date") else ""
-            story.append(Paragraph(f"• {t.get('title')}{due}", s["body"]))
+            story.append(Paragraph(html.escape(f"• {t.get('title')}{due}"), s["body"]))
     else:
         story.append(Paragraph("No tasks generated.", s["body"]))
 

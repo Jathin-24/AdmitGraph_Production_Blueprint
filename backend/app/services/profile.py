@@ -44,11 +44,9 @@ async def get_or_create_default_user(session: AsyncSession) -> User:
     demo = result.scalar_one_or_none()
     if demo is not None:
         return demo
-    result = await session.execute(select(User).order_by(User.created_at).limit(1))
-    user = result.scalar_one_or_none()
-    if user is not None:
-        return user
-    # Fresh database: bootstrap the local demo account (passwordless, admin).
+    # Fresh database (or missing seed): bootstrap the local demo account
+    # (passwordless, admin). Never fall back to the oldest registered
+    # participant — anonymous traffic must not read a real student's data.
     user = User(email=DEMO_EMAIL, full_name="Demo Student", role=UserRole.ADMIN)
     session.add(user)
     await session.flush()

@@ -422,9 +422,21 @@ async def _observe(
 class MonitoringService:
     """On-demand re-check for a single monitor subscription."""
 
-    async def run_check(self, session: AsyncSession, subscription_id: UUID) -> MonitorSnapshot:
+    async def run_check(
+        self,
+        session: AsyncSession,
+        subscription_id: UUID,
+        *,
+        owner_profile_id: UUID | None = None,
+    ) -> MonitorSnapshot:
+        """On-demand check for one subscription.
+
+        `owner_profile_id` scopes the load to a caller's profile: HTTP callers
+        pass the requesting profile (cross-user ids 404 like missing ones),
+        while the background scheduler passes none (system scope).
+        """
         sub = await session.get(MonitorSubscription, subscription_id)
-        if sub is None:
+        if sub is None or (owner_profile_id is not None and sub.profile_id != owner_profile_id):
             raise AppError(404, "NOT_FOUND", "Monitor subscription not found")
         field_key = sub.field_key
         now = datetime.now(UTC)

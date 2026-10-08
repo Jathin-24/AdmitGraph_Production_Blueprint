@@ -116,14 +116,21 @@ def live_db() -> Iterator[str]:
 async def db_session(live_db: str) -> AsyncIterator:
     """A fresh session against the scratch database for one test.
 
-    The engine pool is disposed (within the test's still-open event loop)
-    on teardown: asyncpg connections are loop-bound and pytest-asyncio creates
-    a new loop per test, so pooled connections must not outlive their test.
+    asyncpg connections are loop-bound and pytest-asyncio creates a new loop
+    per test, so a pooled connection must never outlive its test. Disposing at
+    teardown alone is not enough: a connection can re-enter the shared pool
+    AFTER teardown (e.g. a fire-and-forget event-listener session completing
+    late), and the next test would then ping a connection bound to a dead
+    loop. Dropping the cached engine at entry guarantees every test starts
+    with a brand-new, empty pool created on its own loop; the abandoned pool
+    is closed best-effort by ``dispose_engine`` and can no longer poison
+    subsequent tests.
     """
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
-    from app.db.session import get_engine
+    from app.db.session import dispose_engine, get_engine
 
+    dispose_engine()  # replace the engine: this test gets a fresh empty pool
     maker = async_sessionmaker(get_engine(), expire_on_commit=False)
     async with maker() as session:
         yield session
