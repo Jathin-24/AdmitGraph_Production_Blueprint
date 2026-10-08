@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import {
   ConfidencePill,
-  EmptyState,
+  Disclosure,
   ErrorNote,
   EvidenceStatusChip,
   LoadingNote,
@@ -14,13 +14,16 @@ import {
   SeverityChip,
   fmtDate,
 } from "../components/ui";
+import { AuthNudge } from "../components/auth-nudge";
 import { RecheckButton } from "../components/evidence-actions";
+import { GuideStrip } from "../components/guide-strip";
 import { RiskActions } from "../components/risk-actions";
 import {
   createDocument,
   exportStrategyPdf,
   getCompletion,
   getEvidenceHealth,
+  getOnboardingProgress,
   getStrategies,
   getStrategy,
   listDocuments,
@@ -33,6 +36,7 @@ import {
   type PortfolioMove,
   type SimulationResult,
 } from "../lib/api";
+import { useAuth } from "../lib/auth";
 
 const CATEGORY_ORDER = ["REACH", "TARGET", "LOWER_RISK"];
 const CATEGORY_COPY: Record<string, string> = {
@@ -61,6 +65,35 @@ function scenarioLabel(scenario: string, country: string): string {
   const base = SCENARIO_COPY[scenario] ?? scenario.replaceAll("_", " ");
   return scenario === "REMOVE_COUNTRY" && country ? `${base}: ${country}` : base;
 }
+
+/** Urgency copy shared by the urgent band and the "Do this next" card. */
+function dueCopy(days: number): string {
+  return days === 0
+    ? "due today"
+    : days < 0
+      ? `${Math.abs(days)} days overdue`
+      : `in ${days} day${days === 1 ? "" : "s"}`;
+}
+
+/** Risks preview before "Show all" — critical/high first (see riskRank). */
+const RISK_PREVIEW_COUNT = 3;
+const SEVERITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+
+/** FRONTEND_SPEC §Beginner mode — the first-run card's three plain steps. */
+const FIRST_RUN_STEPS = [
+  {
+    title: "Answer a few questions",
+    body: "What you want to study, where, and your budget — one decision per screen.",
+  },
+  {
+    title: "We research real sources",
+    body: "Live requirements, costs and deadlines, checked against your profile.",
+  },
+  {
+    title: "Get your shortlist",
+    body: "Programs with fit scores, costs, deadlines and the risks that matter.",
+  },
+];
 
 /* ------------------------------------------------ Application Readiness */
 
@@ -287,7 +320,9 @@ export default function DashboardPage() {
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [today, setToday] = useState<string | null>(null);
+  const [showAllRisks, setShowAllRisks] = useState(false);
   const queryClient = useQueryClient();
+  const { status: authStatus } = useAuth();
 
   const strategies = useQuery({ queryKey: ["strategies"], queryFn: getStrategies });
   const detail = useQuery({
@@ -302,6 +337,14 @@ export default function DashboardPage() {
   });
   const documents = useQuery({ queryKey: ["documents"], queryFn: listDocuments });
   const completion = useQuery({ queryKey: ["completion"], queryFn: getCompletion });
+  // Onboarding wizard progress — drives the guide strip's profile step and the
+  // "Finish your profile" priority in "Do this next". Short staleTime so the
+  // strip stays fresh without hammering the endpoint.
+  const onboardingProgress = useQuery({
+    queryKey: ["onboarding-progress"],
+    queryFn: getOnboardingProgress,
+    staleTime: 30_000,
+  });
   // Country choices for "I remove a country" come from the programs we hold —
   // no hardcoded list, so the selector always matches real data.
   const programs = useQuery({
@@ -452,8 +495,76 @@ export default function DashboardPage() {
     return out.sort((a, b) => b.days - a.days).slice(0, 5);
   }, [detail.data, today]);
 
+  // Collapse the risk list per strategy switch — the preview is per strategy.
+  useEffect(() => {
+    setShowAllRisks(false);
+  }, [selected]);
+
+  /* --------------------------------------------------- guided next step */
+  // "Do this next" priority (FRONTEND_SPEC: the dashboard must always say
+  // what to do next): incomplete profile > no strategy yet > the most
+  // pressing urgent item > review the plan. Real fetched state only.
+  const dataReady =
+    (strategies.isSuccess || strategies.isError) &&
+    (onboardingProgress.isSuccess || onboardingProgress.isError);
+
+  const nextStep = useMemo(() => {
+    const progress = onboardingProgress.data;
+    if (progress && progress.missing_required_keys.length > 0) {
+      const answered = progress.answered_keys.length;
+      const total = answered + progress.missing_required_keys.length;
+      return {
+        title: "Finish your profile",
+        body: `${answered} of ${total} questions answered — research scores you against a complete picture.`,
+        cta: "Finish my profile",
+        href: "/onboarding",
+      };
+    }
+    if (strategies.isSuccess && items.length === 0) {
+      return {
+        title: "Run your first research",
+        body: "We check live requirements, costs and deadlines, then build your shortlist.",
+        cta: "Run my first research",
+        href: "/research",
+      };
+    }
+    if (strategies.isSuccess && urgent.length > 0) {
+      const top = urgent.reduce((best, u) => (u.days < best.days ? u : best), urgent[0]);
+      return {
+        title: top.title,
+        body: `This one is ${dueCopy(top.days)}.`,
+        cta: top.href ? "Open" : "See next tasks",
+        href: top.href ?? "#next-tasks",
+      };
+    }
+    if (strategies.isSuccess) {
+      return {
+        title: "Review your plan",
+        body: "See what could get in the way and what to do about each risk.",
+        cta: "Review my plan",
+        href: "#risks",
+      };
+    }
+    return null;
+  }, [onboardingProgress.data, strategies.isSuccess, items, urgent]);
+
+  // Risks sorted critical-first (stable within severity) for the collapsed
+  // preview; every row keeps its full RiskActions set when visible.
+  const sortedRisks = useMemo(() => {
+    const list = detail.data?.risks ?? [];
+    return list
+      .map((risk, index) => ({ risk, index }))
+      .sort(
+        (a, b) =>
+          (SEVERITY_RANK[a.risk.severity.toLowerCase()] ?? 4) -
+            (SEVERITY_RANK[b.risk.severity.toLowerCase()] ?? 4) || a.index - b.index
+      )
+      .map((entry) => entry.risk);
+  }, [detail.data]);
+  const visibleRisks = showAllRisks ? sortedRisks : sortedRisks.slice(0, RISK_PREVIEW_COUNT);
+
   return (
-    <main className="mx-auto max-w-5xl space-y-6 px-5 py-8">
+    <main className="mx-auto max-w-5xl space-y-8 px-5 py-8">
       <PageHeader
         eyebrow="Strategy"
         title="My Plan"
@@ -491,19 +602,75 @@ export default function DashboardPage() {
         />
       )}
 
+      {/* Guest mode — the backend serves demo data to anonymous visitors, so
+          the content stays visible but is clearly labelled as a demo. */}
+      {authStatus === "anonymous" && (
+        <div className="flex flex-wrap items-center gap-2" role="note">
+          <span className="chip chip-warn">Demo plan</span>
+          <span className="text-sm text-ink-soft">
+            You&apos;re viewing a demo plan — create your own account to build yours.
+          </span>
+        </div>
+      )}
+      <AuthNudge next="/dashboard" />
+
+      {/* Where you are — the guided journey strip. */}
+      <GuideStrip
+        profile={
+          onboardingProgress.data
+            ? {
+                completionPercent: onboardingProgress.data.completion_percent,
+                missingRequired: onboardingProgress.data.missing_required_keys.length,
+              }
+            : null
+        }
+        researchReady={strategies.isSuccess && items.length > 0}
+        researchLoaded={strategies.isSuccess || strategies.isError}
+        planReady={!!detail.data && detail.data.portfolio.length > 0}
+      />
+
+      {/* Do this next — ONE card, one primary CTA, derived from real state. */}
+      {dataReady && nextStep && (
+        <section
+          className="card flex flex-wrap items-center gap-4 border-forest/40 p-5"
+          aria-label="Do this next"
+        >
+          <div className="min-w-0 flex-1">
+            <p className="eyebrow mb-1">Do this next</p>
+            <p className="display text-xl font-medium text-ink">{nextStep.title}</p>
+            <p className="mt-1 text-sm text-ink-soft">{nextStep.body}</p>
+          </div>
+          <Link href={nextStep.href} className="btn-primary shrink-0">
+            {nextStep.cta}
+          </Link>
+        </section>
+      )}
+
       {strategies.isSuccess && items.length === 0 && (
-        <div className="space-y-3">
-          <EmptyState
-            title="No strategies yet"
-            body="Run the full example once and your portfolio, risks and roadmap appear here."
-            action={
-              <Link href="/research" className="btn-primary btn-sm">
-                Run the full example
-              </Link>
-            }
-          />
+        <section className="card p-6" aria-label="Getting started">
+          <h2 className="display text-xl font-medium text-ink">Your plan doesn&apos;t exist yet</h2>
+          <p className="mt-1 text-sm text-ink-soft">Three steps to a shortlist you can trust:</p>
+          <ol className="mt-4 grid gap-3 sm:grid-cols-3">
+            {FIRST_RUN_STEPS.map((step, index) => (
+              <li key={step.title} className="rounded-lg border border-line bg-paper/50 p-4">
+                <span aria-hidden className="display text-lg font-medium text-forest">
+                  {index + 1}
+                </span>
+                <p className="mt-1 text-sm font-medium text-ink">{step.title}</p>
+                <p className="mt-0.5 text-xs leading-relaxed text-ink-faint">{step.body}</p>
+              </li>
+            ))}
+          </ol>
+          <div className="mt-5 flex flex-wrap items-center gap-3">
+            <Link href="/onboarding" className="btn-primary">
+              Start with my profile
+            </Link>
+            <Link href="/research" className="btn-secondary">
+              See a live example first
+            </Link>
+          </div>
           {profileIncomplete && (
-            <p className="text-sm text-ink-soft">
+            <p className="mt-3 text-sm text-ink-soft">
               Some profile answers are still missing ({missingFields.slice(0, 3).join(", ")}).
               Finish the{" "}
               <Link href="/onboarding" className="link">
@@ -512,7 +679,7 @@ export default function DashboardPage() {
               and research will score against a complete picture.
             </p>
           )}
-        </div>
+        </section>
       )}
 
       {/* Strategy selector */}
@@ -568,13 +735,7 @@ export default function DashboardPage() {
             {urgent.map((u) => (
               <li key={u.key} className="flex flex-wrap items-baseline gap-2">
                 <span className="font-medium">{u.title}</span>
-                <span className="text-xs text-ink-soft">
-                  {u.days === 0
-                    ? "due today"
-                    : u.days < 0
-                      ? `${Math.abs(u.days)} days overdue`
-                      : `in ${u.days} day${u.days === 1 ? "" : "s"}`}
-                </span>
+                <span className="text-xs text-ink-soft">{dueCopy(u.days)}</span>
                 {u.href && (
                   <Link href={u.href} className="link text-xs">
                     Open →
@@ -584,120 +745,6 @@ export default function DashboardPage() {
             ))}
           </ul>
         </section>
-      )}
-
-      {/* Application readiness */}
-      {strategies.isSuccess && (
-        <Section
-          index="—"
-          title="Application readiness"
-          aside={
-            <span className="text-xs text-ink-faint">
-              {readyCount} of {DOC_TYPES.length} ready
-            </span>
-          }
-        >
-          {documents.isLoading && <LoadingNote what="Loading your document checklist…" />}
-          {documents.isError && (
-            <ErrorNote
-              message={`Could not load your checklist: ${(documents.error as Error).message}. Nothing was changed — try again shortly.`}
-            />
-          )}
-          {documents.isSuccess && (
-            <ul className="flex flex-col divide-y divide-line">
-              {readinessRows.map((row) => (
-                <DocRow
-                  key={row.key}
-                  label={row.label}
-                  doc={row.doc}
-                  fallbackType={row.key}
-                  today={today}
-                  busy={updateDoc.isPending || addDoc.isPending}
-                  onSetStatus={(id, status) => updateDoc.mutate({ id, status })}
-                  onAdd={(documentType) => addDoc.mutate(documentType)}
-                />
-              ))}
-            </ul>
-          )}
-          {updateDoc.isError && (
-            <div className="mt-3">
-              <ErrorNote
-                message={`Could not update that document: ${(updateDoc.error as Error).message}`}
-              />
-            </div>
-          )}
-          {addDoc.isError && (
-            <div className="mt-3">
-              <ErrorNote
-                message={`Could not add that document: ${(addDoc.error as Error).message}`}
-              />
-            </div>
-          )}
-          <p className="mt-3 text-xs text-ink-faint">
-            Track only — we never upload documents for you, and nothing here is sent to a
-            university.
-          </p>
-        </Section>
-      )}
-
-      {/* Evidence health (MASTER_SPEC §17) */}
-      {selected && (
-        <Section index="—" title="Evidence health">
-          {evidenceHealth.isLoading && <LoadingNote what="Checking evidence health…" />}
-          {evidenceHealth.isError && (
-            <ErrorNote message="Evidence health is unavailable right now — the backend may be restarting. Everything else on this page still works." />
-          )}
-          {evidenceHealth.data && (
-            <div className="space-y-3">
-              <p className="text-sm text-ink">
-                <span className="display text-2xl font-medium tabular-nums text-forest">
-                  {evidenceHealth.data.programs_with_evidence}/
-                  {evidenceHealth.data.programs_total}
-                </span>{" "}
-                portfolio programs have at least one sourced claim (
-                {evidenceHealth.data.evidence_total} claims total).
-              </p>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs uppercase tracking-wide text-ink-faint">By status</span>
-                {Object.keys(evidenceHealth.data.by_status).length === 0 && (
-                  <span className="text-xs text-ink-faint">No claims extracted yet.</span>
-                )}
-                {Object.entries(evidenceHealth.data.by_status).map(([status, count]) => (
-                  <span key={status} className="flex items-center gap-1.5">
-                    <EvidenceStatusChip status={status} />
-                    <span className="text-xs tabular-nums text-ink-faint">{count}</span>
-                  </span>
-                ))}
-                <span
-                  className={`chip ${
-                    evidenceHealth.data.stale_count > 0 ? "chip-warn" : "chip-good"
-                  }`}
-                >
-                  {evidenceHealth.data.stale_count} stale
-                </span>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs uppercase tracking-wide text-ink-faint">
-                  By confidence
-                </span>
-                {Object.keys(evidenceHealth.data.by_confidence).length === 0 && (
-                  <span className="text-xs text-ink-faint">—</span>
-                )}
-                {Object.entries(evidenceHealth.data.by_confidence).map(([level, count]) => (
-                  <span key={level} className="chip chip-neutral">
-                    {level}: {count}
-                  </span>
-                ))}
-              </div>
-              {evidenceHealth.data.stale_count > 0 && (
-                <p className="text-xs text-ink-soft">
-                  Stale claims passed their freshness window — they stay visible, flagged, and
-                  are re-verified on the next research run.
-                </p>
-              )}
-            </div>
-          )}
-        </Section>
       )}
 
       {detail.data && (
@@ -817,49 +864,59 @@ export default function DashboardPage() {
             <EvidenceDrawer programId={evidenceFor} onClose={() => setEvidenceFor(null)} />
           )}
 
-          {/* Risks */}
-          <Section index="—" title="Risks">
-            {detail.data.risks.length === 0 ? (
-              <p className="text-sm text-ink-faint">No risks flagged.</p>
-            ) : (
-              <ul className="flex flex-col gap-3">
-                {detail.data.risks.map((r) => (
-                  <li key={r.id} className="border-l-4 border-line-dark pl-3 text-sm">
-                    <SeverityChip severity={r.severity} showRaw className="mr-2" />
-                    <span className="font-medium text-ink">{r.title}</span>
-                    <p className="mt-1 text-ink-soft">{r.reason}</p>
-                    <p className="mt-0.5 text-xs text-ink-faint">→ {r.recommended_action}</p>
-                    <div className="mt-1.5">
-                      <RiskActions strategyId={detail.data.id} riskId={r.id} status={r.status} />
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Section>
-
-          {/* Roadmap */}
-          <Section index="—" title="Next tasks">
-            <ul className="flex flex-col divide-y divide-line text-sm">
-              {detail.data.roadmap_tasks.map((t) => (
-                <li key={t.id} className="flex items-baseline gap-3 py-2 first:pt-0 last:pb-0">
-                  <span aria-hidden className="text-forest">
-                    ○
-                  </span>
-                  <span className="flex-1 text-ink">{t.title}</span>
-                  {t.due_date && (
-                    <span className="text-xs tabular-nums text-ink-faint">due {t.due_date}</span>
-                  )}
-                </li>
-              ))}
-              {detail.data.roadmap_tasks.length === 0 && (
-                <li className="py-2 text-ink-faint">No tasks generated yet.</li>
+          {/* Risks — collapsed preview: the 3 most severe first, everything
+              else behind "Show all". Every visible row keeps its actions. */}
+          <div id="risks" className="scroll-mt-8">
+            <Section
+              index="—"
+              title="Risks"
+              aside={
+                sortedRisks.length > RISK_PREVIEW_COUNT ? (
+                  <button
+                    type="button"
+                    className="btn-ghost btn-sm"
+                    aria-expanded={showAllRisks}
+                    aria-controls="risk-list"
+                    onClick={() => setShowAllRisks((v) => !v)}
+                  >
+                    {showAllRisks ? "Show fewer" : `Show all (${sortedRisks.length})`}
+                  </button>
+                ) : null
+              }
+            >
+              {sortedRisks.length === 0 ? (
+                <p className="text-sm text-ink-faint">No risks flagged.</p>
+              ) : (
+                <ul id="risk-list" className="flex flex-col gap-3">
+                  {visibleRisks.map((r) => (
+                    <li key={r.id} className="border-l-4 border-line-dark pl-3 text-sm">
+                      <SeverityChip severity={r.severity} showRaw className="mr-2" />
+                      <span className="font-medium text-ink">{r.title}</span>
+                      <p className="mt-1 text-ink-soft">{r.reason}</p>
+                      <p className="mt-0.5 text-xs text-ink-faint">→ {r.recommended_action}</p>
+                      <div className="mt-1.5">
+                        <RiskActions
+                          strategyId={detail.data.id}
+                          riskId={r.id}
+                          status={r.status}
+                        />
+                      </div>
+                    </li>
+                  ))}
+                </ul>
               )}
-            </ul>
-          </Section>
+              {!showAllRisks && sortedRisks.length > RISK_PREVIEW_COUNT && (
+                <p className="mt-3 text-xs text-ink-faint">
+                  Showing the {visibleRisks.length} most important of {sortedRisks.length} risks
+                  — the rest are one click away.
+                </p>
+              )}
+            </Section>
+          </div>
 
-          {/* Simulator */}
-          <Section index="—" title="What could break this plan?">
+          {/* Simulator — folded by default: a "what if" tool, not something a
+              student needs on their first read of the plan. */}
+          <Disclosure summary="What could break this plan?" hint="Stress-test the plan">
             <div className="flex flex-wrap items-end gap-3">
               <label className="flex flex-col gap-1">
                 <span className="label">Scenario</span>
@@ -1003,8 +1060,145 @@ export default function DashboardPage() {
               Simulations recompute fit against your profile — they never predict admission
               outcomes.
             </p>
-          </Section>
+          </Disclosure>
+
+          {/* Roadmap */}
+          <div id="next-tasks" className="scroll-mt-8">
+            <Section index="—" title="Next tasks">
+              <ul className="flex flex-col divide-y divide-line text-sm">
+                {detail.data.roadmap_tasks.map((t) => (
+                  <li key={t.id} className="flex items-baseline gap-3 py-2 first:pt-0 last:pb-0">
+                    <span aria-hidden className="text-forest">
+                      ○
+                    </span>
+                    <span className="flex-1 text-ink">{t.title}</span>
+                    {t.due_date && (
+                      <span className="text-xs tabular-nums text-ink-faint">due {t.due_date}</span>
+                    )}
+                  </li>
+                ))}
+                {detail.data.roadmap_tasks.length === 0 && (
+                  <li className="py-2 text-ink-faint">No tasks generated yet.</li>
+                )}
+              </ul>
+            </Section>
+          </div>
         </>
+      )}
+
+      {/* Application readiness */}
+      {strategies.isSuccess && (
+        <Section
+          index="—"
+          title="Application readiness"
+          aside={
+            <span className="text-xs text-ink-faint">
+              {readyCount} of {DOC_TYPES.length} ready
+            </span>
+          }
+        >
+          {documents.isLoading && <LoadingNote what="Loading your document checklist…" />}
+          {documents.isError && (
+            <ErrorNote
+              message={`Could not load your checklist: ${(documents.error as Error).message}. Nothing was changed — try again shortly.`}
+            />
+          )}
+          {documents.isSuccess && (
+            <ul className="flex flex-col divide-y divide-line">
+              {readinessRows.map((row) => (
+                <DocRow
+                  key={row.key}
+                  label={row.label}
+                  doc={row.doc}
+                  fallbackType={row.key}
+                  today={today}
+                  busy={updateDoc.isPending || addDoc.isPending}
+                  onSetStatus={(id, status) => updateDoc.mutate({ id, status })}
+                  onAdd={(documentType) => addDoc.mutate(documentType)}
+                />
+              ))}
+            </ul>
+          )}
+          {updateDoc.isError && (
+            <div className="mt-3">
+              <ErrorNote
+                message={`Could not update that document: ${(updateDoc.error as Error).message}`}
+              />
+            </div>
+          )}
+          {addDoc.isError && (
+            <div className="mt-3">
+              <ErrorNote
+                message={`Could not add that document: ${(addDoc.error as Error).message}`}
+              />
+            </div>
+          )}
+          <p className="mt-3 text-xs text-ink-faint">
+            Track only — we never upload documents for you, and nothing here is sent to a
+            university.
+          </p>
+        </Section>
+      )}
+
+      {/* Evidence health (MASTER_SPEC §17) — reference material: how much of
+          the plan is actually backed by a sourced claim. */}
+      {selected && (
+        <Disclosure summary="Evidence health" hint="How well-sourced your plan is">
+          {evidenceHealth.isLoading && <LoadingNote what="Checking evidence health…" />}
+          {evidenceHealth.isError && (
+            <ErrorNote message="Evidence health is unavailable right now — the backend may be restarting. Everything else on this page still works." />
+          )}
+          {evidenceHealth.data && (
+            <div className="space-y-3">
+              <p className="text-sm text-ink">
+                <span className="display text-2xl font-medium tabular-nums text-forest">
+                  {evidenceHealth.data.programs_with_evidence}/
+                  {evidenceHealth.data.programs_total}
+                </span>{" "}
+                portfolio programs have at least one sourced claim (
+                {evidenceHealth.data.evidence_total} claims total).
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs uppercase tracking-wide text-ink-faint">By status</span>
+                {Object.keys(evidenceHealth.data.by_status).length === 0 && (
+                  <span className="text-xs text-ink-faint">No claims extracted yet.</span>
+                )}
+                {Object.entries(evidenceHealth.data.by_status).map(([status, count]) => (
+                  <span key={status} className="flex items-center gap-1.5">
+                    <EvidenceStatusChip status={status} />
+                    <span className="text-xs tabular-nums text-ink-faint">{count}</span>
+                  </span>
+                ))}
+                <span
+                  className={`chip ${
+                    evidenceHealth.data.stale_count > 0 ? "chip-warn" : "chip-good"
+                  }`}
+                >
+                  {evidenceHealth.data.stale_count} stale
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs uppercase tracking-wide text-ink-faint">
+                  By confidence
+                </span>
+                {Object.keys(evidenceHealth.data.by_confidence).length === 0 && (
+                  <span className="text-xs text-ink-faint">—</span>
+                )}
+                {Object.entries(evidenceHealth.data.by_confidence).map(([level, count]) => (
+                  <span key={level} className="chip chip-neutral">
+                    {level}: {count}
+                  </span>
+                ))}
+              </div>
+              {evidenceHealth.data.stale_count > 0 && (
+                <p className="text-xs text-ink-soft">
+                  Stale claims passed their freshness window — they stay visible, flagged, and
+                  are re-verified on the next research run.
+                </p>
+              )}
+            </div>
+          )}
+        </Disclosure>
       )}
     </main>
   );

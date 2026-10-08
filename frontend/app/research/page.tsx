@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ErrorNote, LoadingNote, PageHeader } from "../components/ui";
+import { AuthNudge } from "../components/auth-nudge";
 import {
   cancelRun,
   getCompletion,
@@ -220,6 +221,9 @@ export default function ResearchPage() {
 
   const totals = researchTotals(steps);
   const stageStates = stageStatuses(steps);
+  // No run to show yet (never started, or the old one was cleaned up) ⇒
+  // explain what a run does before the student triggers one.
+  const noRunYet = !runInFlight && !run.data && steps.length === 0;
   const sourcesLine =
     totals.sources > 0 && totals.searches === 0
       ? isDemo
@@ -242,6 +246,52 @@ export default function ResearchPage() {
         title="Watch the research run"
         lede="Real backend events, not a canned animation — live research is powered by SerpApi on our server, and no provider keys ever touch your browser."
       />
+
+      {/* Pre-run primer — FRONTEND_SPEC §Research screen, plain language for
+          a student who has never triggered a research run before. The
+          sources line only appears when the API actually reported a count. */}
+      {noRunYet && (
+        <section className="card p-5" aria-labelledby="research-primer-title">
+          <h2 id="research-primer-title" className="display text-base font-medium text-ink">
+            What happens when you search
+          </h2>
+          <p className="mt-1 text-sm text-ink-soft">
+            A run is live research, not a canned animation — it moves through six stages, and a
+            stage only turns complete when the backend confirms it:
+          </p>
+          <ul className="mt-3 flex flex-col gap-2 text-sm">
+            <li>
+              <span className="font-medium text-ink">Understanding your profile</span>{" "}
+              <span className="text-ink-soft">
+                — we start from your answers so results match your background, budget and goals.
+              </span>
+            </li>
+            <li>
+              <span className="font-medium text-ink">Finding candidate programs</span>{" "}
+              <span className="text-ink-soft">
+                — real web searches surface programs that could fit; nothing is invented.
+              </span>
+            </li>
+            <li>
+              <span className="font-medium text-ink">Verifying requirements</span>, then{" "}
+              <span className="font-medium text-ink">checking costs and deadlines</span>{" "}
+              <span className="text-ink-soft">
+                — every requirement, fee and date is matched to a source.
+              </span>
+            </li>
+            <li>
+              <span className="font-medium text-ink">Building a risk profile</span>, then{" "}
+              <span className="font-medium text-ink">building your strategy</span>{" "}
+              <span className="text-ink-soft">
+                — we flag what could block you and turn everything into ordered next steps.
+              </span>
+            </li>
+          </ul>
+          <p className="mt-3 border-t border-line pt-2 text-xs text-ink-faint">
+            Live research powered by SerpApi{sourcesLine ? ` — ${sourcesLine}` : "."}
+          </p>
+        </section>
+      )}
 
       {/* Start a run */}
       <section className="card p-5" aria-label="Start a research run">
@@ -269,6 +319,11 @@ export default function ResearchPage() {
         <p className="mt-0.5 text-xs text-ink-faint">
           “Run fresh research” uses live search credits (powered by SerpApi).
         </p>
+        <div className="mt-3">
+          <AuthNudge next="/research">
+            Runs are saved to the demo while you’re a guest — create an account to keep yours.
+          </AuthNudge>
+        </div>
         {runInFlight && (
           <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-line pt-3">
             <span className="text-xs text-ink-soft" role="status">

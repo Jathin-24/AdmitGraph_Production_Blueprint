@@ -18,6 +18,7 @@ import {
 } from "../../components/ui";
 import { RecheckButton, ResolveConflictButton } from "../../components/evidence-actions";
 import { RiskActions } from "../../components/risk-actions";
+import { SectionAnchor, SectionNav, type SectionLink } from "./section-nav";
 import {
   createSubscription,
   getEvidenceConflicts,
@@ -35,6 +36,21 @@ import {
   type ProfileOut,
   type RequirementItem,
 } from "../../lib/api";
+
+/** FRONTEND_SPEC §Program detail — the nine sections in spec order. Module
+ *  scope keeps the array reference stable so SectionNav's observer effect
+ *  runs once, not on every render. */
+const SECTIONS: SectionLink[] = [
+  { id: "overview", label: "Overview" },
+  { id: "why-it-fits", label: "Why it fits" },
+  { id: "eligibility-matrix", label: "Eligibility matrix" },
+  { id: "risks", label: "Risks" },
+  { id: "cost", label: "Cost" },
+  { id: "deadline", label: "Deadline" },
+  { id: "career-signal", label: "Career signal" },
+  { id: "evidence", label: "Evidence" },
+  { id: "next-actions", label: "Next actions" },
+];
 
 const CATEGORIES: { label: string; types: string[]; keys: string[] }[] = [
   { label: "Academic background", types: ["academic"], keys: ["cgpa_min", "academic_cgpa_min", "backlogs_max"] },
@@ -321,6 +337,9 @@ export default function ProgramDetailPage() {
         )}
       </header>
 
+      {/* Sticky in-page nav — FRONTEND_SPEC §Program detail (nine sections) */}
+      <SectionNav sections={SECTIONS} />
+
       {/* No plan yet — guide to the example run */}
       {strategies.isSuccess && (strategies.data?.items ?? []).length === 0 && (
         <div className="card flex flex-wrap items-center justify-between gap-3 p-4">
@@ -335,6 +354,7 @@ export default function ProgramDetailPage() {
       )}
 
       {/* 1. Overview */}
+      <SectionAnchor id="overview">
       <Section index="01" title="Overview">
         <div className="flex flex-wrap gap-1.5">
           {[p.degree_type, p.field_of_study, p.specialization, p.language, p.active ? "Active" : "Inactive"]
@@ -358,8 +378,10 @@ export default function ProgramDetailPage() {
           <span className="text-ink-faint">Last verified: {fmtDate(p.last_verified_at)}</span>
         </div>
       </Section>
+      </SectionAnchor>
 
       {/* 2. Why it fits */}
+      <SectionAnchor id="why-it-fits">
       <Section index="02" title="Why it fits">
         {fitItem ? (
           <div>
@@ -383,8 +405,10 @@ export default function ProgramDetailPage() {
           </p>
         )}
       </Section>
+      </SectionAnchor>
 
       {/* 3. Eligibility matrix */}
+      <SectionAnchor id="eligibility-matrix">
       <Section index="03" title="Eligibility matrix">
         <div className="overflow-x-auto">
           <table className="table-editorial min-w-[720px]">
@@ -471,8 +495,10 @@ export default function ProgramDetailPage() {
           </div>
         )}
       </Section>
+      </SectionAnchor>
 
       {/* 4. Risks */}
+      <SectionAnchor id="risks">
       <Section index="04" title="Risks">
         {blockers.length === 0 && risks.length === 0 ? (
           <p className="text-sm text-ink-faint">No open risks flagged for this program yet.</p>
@@ -509,8 +535,10 @@ export default function ProgramDetailPage() {
           </p>
         )}
       </Section>
+      </SectionAnchor>
 
       {/* 5. Cost */}
+      <SectionAnchor id="cost">
       <Section index="05" title="Cost">
         {tuitionReq ? (
           <p className="text-sm">
@@ -539,8 +567,10 @@ export default function ProgramDetailPage() {
           </p>
         )}
       </Section>
+      </SectionAnchor>
 
       {/* 6. Deadline */}
+      <SectionAnchor id="deadline">
       <Section index="06" title="Deadline">
         {deadlineReq ? (
           <p className="text-sm">
@@ -557,8 +587,10 @@ export default function ProgramDetailPage() {
           </p>
         )}
       </Section>
+      </SectionAnchor>
 
       {/* 7. Career signal */}
+      <SectionAnchor id="career-signal">
       <Section index="07" title="Career signal">
         {ev.some((e) => e.claim_type === "career") ? (
           <ul className="flex list-disc flex-col gap-1 pl-5 text-sm text-ink">
@@ -575,8 +607,10 @@ export default function ProgramDetailPage() {
           </p>
         )}
       </Section>
+      </SectionAnchor>
 
       {/* 8. Evidence */}
+      <SectionAnchor id="evidence">
       <Section
         index="08"
         title="Evidence"
@@ -596,8 +630,10 @@ export default function ProgramDetailPage() {
           <EvidenceList items={ev} />
         )}
       </Section>
+      </SectionAnchor>
 
       {/* 9. Next actions */}
+      <SectionAnchor id="next-actions">
       <Section index="09" title="Next actions">
         <ul className="flex list-disc flex-col gap-2 pl-5 text-sm text-ink">
           <li>
@@ -623,6 +659,7 @@ export default function ProgramDetailPage() {
           )}
         </ul>
       </Section>
+      </SectionAnchor>
     </main>
   );
 }

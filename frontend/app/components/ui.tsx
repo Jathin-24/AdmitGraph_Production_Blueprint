@@ -225,6 +225,43 @@ export function Section({
   );
 }
 
+/**
+ * Native `<details>` disclosure — no client JS, keyboard accessible by
+ * default, and it renders identically on the server. Used to push reference
+ * material ("Evidence health", "What could break this plan?") below the
+ * decision a student actually came here to make, instead of stacking eight
+ * equal-weight cards on one screen.
+ */
+export function Disclosure({
+  summary,
+  hint,
+  defaultOpen = false,
+  children,
+}: {
+  summary: string;
+  hint?: string;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <details className="card p-5" open={defaultOpen}>
+      <summary className="flex cursor-pointer list-none items-baseline justify-between gap-4 rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-forest">
+        <span className="display text-lg font-medium text-ink">
+          {summary}
+          {hint && <span className="ml-2 text-sm font-normal text-ink-faint">{hint}</span>}
+        </span>
+        <span
+          aria-hidden
+          className="text-ink-faint transition-transform [details[open]_&]:rotate-180"
+        >
+          ▾
+        </span>
+      </summary>
+      <div className="mt-4">{children}</div>
+    </details>
+  );
+}
+
 export function EmptyState({
   title,
   body,

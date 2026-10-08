@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useState } from "react";
 import { EmptyState, ErrorNote, LoadingNote, PageHeader } from "../components/ui";
+import { AuthNudge } from "../components/auth-nudge";
 import { listPrograms, saveProgram, unsaveProgram } from "../lib/api";
 
 function SaveButton({ programId, saved }: { programId: string; saved: boolean }) {
@@ -56,7 +57,7 @@ export default function ExplorePage() {
       <PageHeader
         eyebrow="Catalog"
         title="Explore programs"
-        lede="Programs discovered during live research runs — every row traces back to stored evidence, never to guesses."
+        lede="Find real, sourced programs to compare — every row traces back to evidence from a research run, never to guesses."
         actions={
           <label className="flex items-center gap-2 self-end text-sm text-ink-soft">
             <input
@@ -73,6 +74,8 @@ export default function ExplorePage() {
         }
       />
 
+      <AuthNudge next="/explore">Sign in to keep saved programs in your own list.</AuthNudge>
+
       {programs.isLoading && <LoadingNote what="Loading programs…" />}
       {programs.isError && (
         <ErrorNote
@@ -80,18 +83,57 @@ export default function ExplorePage() {
         />
       )}
 
+      {/* No results — FRONTEND_SPEC §Error states: always explain WHY the
+          list may be empty and offer one concrete next action. */}
       {programs.isSuccess && programs.data.items.length === 0 && (
         <EmptyState
-          title={savedOnly ? "Nothing saved yet" : "No programs yet"}
+          title={
+            total > 0
+              ? "Nothing on this page"
+              : savedOnly
+                ? "Nothing saved yet"
+                : "No programs yet"
+          }
           body={
-            savedOnly
-              ? "Save programs from the full list to build your shortlist here."
-              : "Programs appear after a research run discovers them — start with the full example."
+            total > 0
+              ? "There are programs in the catalog, but none left on this page — the list may have changed since you moved forward."
+              : savedOnly
+                ? "The “Saved only” filter is on and nothing matches it yet — press Save on a program in the full list and it lands in this shortlist."
+                : "Nothing has been researched on this server yet — programs only appear once a research run discovers and verifies them."
           }
           action={
-            <Link href="/research" className="btn-primary btn-sm">
-              Run the full example
-            </Link>
+            total > 0 ? (
+              <button
+                type="button"
+                className="btn-primary btn-sm"
+                onClick={() => {
+                  setPage((p) => Math.max(1, p - 1));
+                  queryClient.invalidateQueries({ queryKey: ["programs"] });
+                }}
+              >
+                ← Back a page
+              </button>
+            ) : savedOnly ? (
+              <>
+                <button
+                  type="button"
+                  className="btn-primary btn-sm"
+                  onClick={() => {
+                    setSavedOnly(false);
+                    setPage(1);
+                  }}
+                >
+                  Show all programs
+                </button>
+                <Link href="/research" className="btn-secondary btn-sm">
+                  Run the full example
+                </Link>
+              </>
+            ) : (
+              <Link href="/research" className="btn-primary btn-sm">
+                Run the full example
+              </Link>
+            )
           }
         />
       )}
