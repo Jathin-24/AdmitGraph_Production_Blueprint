@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
+import { AuthNudge } from "../components/auth-nudge";
 import { Term, type GlossaryKey } from "../components/glossary";
 import { LoadingNote } from "../components/ui";
 import {
@@ -95,6 +96,24 @@ const CUSTOM_FIELDS: Record<string, CustomField[]> = {
 /** Whole-number inputs (integer columns); every other number accepts decimals. */
 const INTEGER_KEYS = new Set(["graduation_year", "backlogs", "total_experience_months"]);
 
+/** Spec §Profile wizard progress indicator: Goal → Education → Tests →
+ *  Experience → Budget → Preferences → Review. Pinned by step id so the stage
+ *  names stay exact even if the backend rewords a title; an id we don't
+ *  recognise falls back to the schema's own title rather than a guess. */
+const STAGE_LABELS: Record<string, string> = {
+  goal: "Goal",
+  education: "Education",
+  tests: "Tests",
+  experience: "Experience",
+  budget: "Budget",
+  preferences: "Preferences",
+  review: "Review",
+};
+
+function stageLabel(step: Step): string {
+  return STAGE_LABELS[step.id] ?? step.title;
+}
+
 /** One decision per screen: tightly related fields share a card. */
 const FIELD_GROUPS: Record<string, { title: string; keys: string[] }[]> = {
   goal: [
@@ -175,6 +194,31 @@ function groupsFor(step: Step): { title: string; fields: Field[] }[] {
   return groups.length > 0 ? groups : [{ title: step.title, fields: step.fields }];
 }
 
+/** Spec §Profile wizard: each question shows an example. Display-only —
+ *  overrides cover schema examples that describe the answer rather than what
+ *  to type ("IELTS 7.5", "1800000 INR"): a number input takes a plain number,
+ *  and that number is what validation and the backend actually see. */
+const SCHEMA_EXAMPLE_OVERRIDES: Record<string, string> = {
+  english_test_overall: "7.5",
+  total_budget_amount: "1800000",
+  annual_budget_amount: "300000",
+};
+
+/** Examples for payload-only fields the schema doesn't ship (labels only —
+ *  never sent anywhere). */
+const CUSTOM_EXAMPLES: Record<string, string> = {
+  english_test_type: "IELTS",
+  english_test_date: "2026-09-01",
+  english_expiry_date: "2028-09-01",
+};
+
+/** The illustrative value shown under a field's input. */
+function exampleFor(field: Field): string | null {
+  return (
+    SCHEMA_EXAMPLE_OVERRIDES[field.key] ?? field.example ?? CUSTOM_EXAMPLES[field.key] ?? null
+  );
+}
+
 /** Per-field rules: required must be present, numbers must parse. These are
  *  the same checks the backend applies on save (whole numbers for integer
  *  columns, finite decimals elsewhere) — nothing extra is invented. */
@@ -192,7 +236,7 @@ function rulesFor(field: Field) {
       if (field.input_type === "number") {
         const parsed = Number(value);
         if (!Number.isFinite(parsed)) {
-          return `Enter a number, for example ${field.example ?? "8.1"}.`;
+          return `Enter a number, for example ${exampleFor(field) ?? "8.1"}.`;
         }
         if (parsed < 0) return "Cannot be negative.";
         if (INTEGER_KEYS.has(field.key) && !Number.isInteger(parsed)) {
@@ -207,8 +251,11 @@ function rulesFor(field: Field) {
 function stepTitlesForKeys(steps: Step[], keys: string[]): string[] {
   const titles: string[] = [];
   for (const key of keys) {
-    const title = steps.find((s) => s.fields.some((f) => f.key === key))?.title;
-    if (title && !titles.includes(title)) titles.push(title);
+    const stage = steps.find((s) => s.fields.some((f) => f.key === key));
+    if (stage) {
+      const label = stageLabel(stage);
+      if (!titles.includes(label)) titles.push(label);
+    }
   }
   return titles;
 }
@@ -474,7 +521,13 @@ export default function OnboardingPage() {
     const error = errors[field.key];
     const hintId = `hint-${field.key}`;
     const errorId = `error-${field.key}`;
-    const describedBy = error ? `${hintId} ${errorId}` : hintId;
+    const example = exampleFor(field);
+    const exampleId = `example-${field.key}`;
+    const describedBy = [
+      hintId,
+      ...(example ? [exampleId] : []),
+      ...(error ? [errorId] : []),
+    ].join(" ");
 
     if (field.input_type === "subjects") {
       return renderSubjects();
@@ -502,12 +555,8 @@ export default function OnboardingPage() {
         </label>
         <span className="hint" id={hintId}>
           {field.explanation}
-          {field.example ? ` e.g. ${field.example}` : ""}
           {field.input_type === "list" ? " — separate items with commas" : ""}
         </span>
-        {field.why_we_ask && (
-          <span className="text-xs italic text-ink-soft">Why we ask: {field.why_we_ask}</span>
-        )}
         {field.input_type === "choice" ? (
           <select {...common} {...fieldRegister}>
             <option value="">Skip for now</option>
@@ -530,9 +579,20 @@ export default function OnboardingPage() {
                   : "decimal"
                 : undefined
             }
-            placeholder={field.example ?? undefined}
+            placeholder={example ?? undefined}
             {...fieldRegister}
           />
+        )}
+        {/* Spec §Profile wizard order: input → example → "Why we ask this" */}
+        {example && (
+          <span className="hint italic" id={exampleId}>
+            e.g. {example}
+          </span>
+        )}
+        {field.why_we_ask && (
+          <span className="text-xs italic text-ink-soft">
+            Why we ask this: {field.why_we_ask}
+          </span>
         )}
         {error && (
           <span className="text-xs text-danger" id={errorId} role="alert">
@@ -562,7 +622,7 @@ export default function OnboardingPage() {
                   className="field"
                   placeholder="e.g. Mathematics"
                   value={row.name}
-                  aria-describedby="hint-subjects-detail"
+                  aria-describedby="hint-subjects-detail example-subjects"
                   onChange={(e) => {
                     setSubjectsDirty(true);
                     setSubjectsError(null);
@@ -577,7 +637,7 @@ export default function OnboardingPage() {
                   inputMode="decimal"
                   placeholder="4"
                   value={row.credits}
-                  aria-describedby="hint-subjects-detail"
+                  aria-describedby="hint-subjects-detail example-subjects"
                   onChange={(e) => {
                     setSubjectsDirty(true);
                     setSubjectsError(null);
@@ -613,6 +673,9 @@ export default function OnboardingPage() {
         >
           + Add subject
         </button>
+        <span className="hint italic" id="example-subjects">
+          e.g. Mathematics (4 credits)
+        </span>
         {subjectsError && (
           <span className="text-xs text-danger" role="alert">
             {subjectsError}
@@ -649,14 +712,14 @@ export default function OnboardingPage() {
           .map((s) => {
             const fields = [...s.fields, ...(CUSTOM_FIELDS[s.id] ?? [])];
             return (
-              <section key={s.id} className="card p-4" aria-label={`${s.title} summary`}>
+              <section key={s.id} className="card p-4" aria-label={`${stageLabel(s)} summary`}>
                 <div className="mb-3 flex items-center justify-between gap-3 border-b border-line pb-2">
-                  <h2 className="label">{s.title}</h2>
+                  <h2 className="label">{stageLabel(s)}</h2>
                   <button
                     type="button"
                     className="btn-ghost btn-sm"
                     onClick={() => goToStep(steps.indexOf(s))}
-                    aria-label={`Edit ${s.title} answers`}
+                    aria-label={`Edit ${stageLabel(s)} answers`}
                   >
                     Edit
                   </button>
@@ -691,17 +754,29 @@ export default function OnboardingPage() {
               </section>
             );
           })}
+        {/* Finish handoff: plain statement of what happens after Done. */}
+        <p
+          role="status"
+          className="rounded-lg border border-line bg-paper-dark px-4 py-3 text-sm text-ink-soft"
+        >
+          Next: we research real sources and build your plan — usually about a minute.
+        </p>
       </div>
     );
   }
 
   return (
     <main className="mx-auto flex max-w-xl flex-col gap-6 px-5 py-10">
+      {/* Guests: their answers live on the demo profile, not an account */}
+      <AuthNudge next="/onboarding">
+        {"You're filling this in as a guest — create a free account so your answers stay yours."}
+      </AuthNudge>
+
       {/* Progress: server-side completion + where you are in the wizard */}
       <div>
         <div className="mb-2 flex items-baseline justify-between">
           <p className="eyebrow">
-            Step {index + 1} of {steps.length}
+            Step {index + 1} of {steps.length} · {stageLabel(step)}
           </p>
           <span className="text-xs tabular-nums text-ink-faint">{completion}% complete</span>
         </div>
@@ -719,7 +794,7 @@ export default function OnboardingPage() {
           {steps.map((s, i) => (
             <li key={s.id} aria-current={i === index ? "step" : undefined}>
               <span className={`chip ${i === index ? "chip-good" : "chip-neutral"}`}>
-                {i + 1}. {s.title}
+                {i + 1}. {stageLabel(s)}
               </span>
             </li>
           ))}
@@ -761,7 +836,7 @@ export default function OnboardingPage() {
           <button
             className="btn-ghost"
             onClick={() => goToStep(index - 1)}
-            aria-label={`Back to ${steps[index - 1].title} step`}
+            aria-label={`Back to ${stageLabel(steps[index - 1])} step`}
           >
             ← Back
           </button>
@@ -770,7 +845,7 @@ export default function OnboardingPage() {
           <button
             className="btn-primary ml-auto"
             onClick={goNext}
-            aria-label={`Next: ${steps[index + 1].title} step`}
+            aria-label={`Next: ${stageLabel(steps[index + 1])} step`}
           >
             Next →
           </button>
