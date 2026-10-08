@@ -6,7 +6,8 @@ import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 
 import { ErrorNote } from "../components/ui";
-import { login, setToken } from "../lib/api";
+import { getOnboardingProgress, login } from "../lib/api";
+import { useAuth } from "../lib/auth";
 
 interface LoginForm {
   email: string;
@@ -27,11 +28,25 @@ function safeNextPath(): string | null {
   return null;
 }
 
+/** Sign-in lands where the student still has work to do: unfinished profile
+ *  -> the wizard; a complete profile -> the plan dashboard. */
+async function landingPath(): Promise<string> {
+  try {
+    const progress = await getOnboardingProgress();
+    return progress.missing_required_keys.length > 0 ? "/onboarding" : "/dashboard";
+  } catch {
+    return "/dashboard";
+  }
+}
+
 export default function LoginPage() {
   const router = useRouter();
+  const { status, signIn } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [expired, setExpired] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [nextPath, setNextPath] = useState<string | null>(null);
 
   const {
     register,
@@ -47,15 +62,23 @@ export default function LoginPage() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("expired")) setExpired(true);
+    setNextPath(safeNextPath());
   }, []);
+
+  // Already signed in: no reason to sit on the sign-in form.
+  useEffect(() => {
+    if (status === "authenticated") router.replace(nextPath ?? "/dashboard");
+  }, [status, nextPath, router]);
 
   async function onSubmit(values: LoginForm): Promise<void> {
     setSubmitting(true);
     setError(null);
     try {
       const response = await login(values);
-      setToken(response.token);
-      router.push(safeNextPath() ?? "/dashboard");
+      // Publish the session to the global auth context BEFORE navigating so
+      // the nav account menu updates immediately (no stale "Sign in").
+      signIn(response.token, response.user);
+      router.push(nextPath ?? (await landingPath()));
     } catch (e) {
       const message = e instanceof Error ? e.message : "Sign-in failed";
       setError(
@@ -66,6 +89,8 @@ export default function LoginPage() {
       setSubmitting(false);
     }
   }
+
+  const registerHref = nextPath ? `/register?next=${encodeURIComponent(nextPath)}` : "/register";
 
   return (
     <main className="mx-auto flex max-w-xl flex-col gap-6 px-5 py-16">
@@ -106,20 +131,30 @@ export default function LoginPage() {
 
           <label className="flex flex-col gap-1.5">
             <span className="label">Password</span>
-            <input
-              className="field"
-              type="password"
-              autoComplete="current-password"
-              placeholder="Your password"
-              aria-invalid={errors.password ? true : undefined}
-              {...register("password", {
-                required: "Password is required",
-                minLength: {
-                  value: PASSWORD_MIN,
-                  message: `Password must be at least ${PASSWORD_MIN} characters long`,
-                },
-              })}
-            />
+            <span className="flex gap-2">
+              <input
+                className="field min-w-0 flex-1"
+                type={showPassword ? "text" : "password"}
+                autoComplete="current-password"
+                placeholder="Your password"
+                aria-invalid={errors.password ? true : undefined}
+                {...register("password", {
+                  required: "Password is required",
+                  minLength: {
+                    value: PASSWORD_MIN,
+                    message: `Password must be at least ${PASSWORD_MIN} characters long`,
+                  },
+                })}
+              />
+              <button
+                type="button"
+                className="btn-ghost btn-sm shrink-0"
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                onClick={() => setShowPassword((wasShown) => !wasShown)}
+              >
+                {showPassword ? "Hide" : "Show"}
+              </button>
+            </span>
             {errors.password && (
               <span className="text-xs text-danger" role="alert">
                 {errors.password.message}
@@ -135,7 +170,7 @@ export default function LoginPage() {
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
             <p className="text-sm text-ink-faint">
               New here?{" "}
-              <Link href="/register" className="link">
+              <Link href={registerHref} className="link">
                 Create an account
               </Link>
             </p>

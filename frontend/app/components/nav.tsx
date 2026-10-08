@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { useAuth } from "../lib/auth";
 import { AccountMenu } from "./account";
 import { NotificationsBell } from "./notifications-bell";
 
@@ -33,6 +34,7 @@ function Mark() {
 
 export function Nav() {
   const pathname = usePathname();
+  const { status } = useAuth();
   return (
     <header className="sticky top-0 z-20 border-b border-line bg-paper/95 backdrop-blur">
       <nav
@@ -72,9 +74,18 @@ export function Nav() {
         </div>
 
         <div className="flex items-center gap-3">
-          <Link href="/research" className="btn-primary btn-sm">
-            Build my strategy
-          </Link>
+          {/* Session-aware actions. A signed-in student resumes their plan;
+              an anonymous visitor gets one unmistakable way in. Both used to
+              show the same "Build my strategy" regardless of state. */}
+          {status === "authenticated" ? (
+            <Link href="/research" className="btn-primary btn-sm">
+              Build my strategy
+            </Link>
+          ) : (
+            <Link href="/research" className="btn-ghost btn-sm hidden sm:inline-flex">
+              See an example
+            </Link>
+          )}
           <NotificationsBell />
           <AccountMenu />
         </div>

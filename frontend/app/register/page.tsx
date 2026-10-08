@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 
 import { ErrorNote } from "../components/ui";
-import { register, setToken } from "../lib/api";
+import { register } from "../lib/api";
+import { useAuth } from "../lib/auth";
 
 interface RegisterForm {
   full_name: string;
@@ -29,8 +30,11 @@ function safeNextPath(): string | null {
 
 export default function RegisterPage() {
   const router = useRouter();
+  const { status, signIn } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [nextPath, setNextPath] = useState<string | null>(null);
 
   const {
     register: registerField,
@@ -41,6 +45,17 @@ export default function RegisterPage() {
     mode: "onTouched",
   });
 
+  // Read after mount so server and client render identical first paint.
+  useEffect(() => {
+    setNextPath(safeNextPath());
+  }, []);
+
+  // Already signed in: sending an authenticated user to the sign-up form is
+  // a dead end — leave for their destination instead.
+  useEffect(() => {
+    if (status === "authenticated") router.replace(nextPath ?? "/dashboard");
+  }, [status, nextPath, router]);
+
   async function onSubmit(values: RegisterForm): Promise<void> {
     setSubmitting(true);
     setError(null);
@@ -50,8 +65,12 @@ export default function RegisterPage() {
         password: values.password,
         full_name: values.full_name.trim() || undefined,
       });
-      setToken(response.token);
-      router.push(safeNextPath() ?? "/dashboard");
+      // Publish to the global auth context before navigating so the nav
+      // reflects the new session immediately.
+      signIn(response.token, response.user);
+      // A brand-new account has an empty profile: land in the wizard unless
+      // something specific is waiting (?next=…).
+      router.push(nextPath ?? "/onboarding");
     } catch (e) {
       const message = e instanceof Error ? e.message : "Account creation failed";
       setError(
@@ -62,6 +81,8 @@ export default function RegisterPage() {
       setSubmitting(false);
     }
   }
+
+  const loginHref = nextPath ? `/login?next=${encodeURIComponent(nextPath)}` : "/login";
 
   return (
     <main className="mx-auto flex max-w-xl flex-col gap-6 px-5 py-16">
@@ -113,20 +134,30 @@ export default function RegisterPage() {
 
           <label className="flex flex-col gap-1.5">
             <span className="label">Password</span>
-            <input
-              className="field"
-              type="password"
-              autoComplete="new-password"
-              placeholder="At least 8 characters"
-              aria-invalid={errors.password ? true : undefined}
-              {...registerField("password", {
-                required: "Password is required",
-                minLength: {
-                  value: PASSWORD_MIN,
-                  message: `Password must be at least ${PASSWORD_MIN} characters long`,
-                },
-              })}
-            />
+            <span className="flex gap-2">
+              <input
+                className="field min-w-0 flex-1"
+                type={showPassword ? "text" : "password"}
+                autoComplete="new-password"
+                placeholder="At least 8 characters"
+                aria-invalid={errors.password ? true : undefined}
+                {...registerField("password", {
+                  required: "Password is required",
+                  minLength: {
+                    value: PASSWORD_MIN,
+                    message: `Password must be at least ${PASSWORD_MIN} characters long`,
+                  },
+                })}
+              />
+              <button
+                type="button"
+                className="btn-ghost btn-sm shrink-0"
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                onClick={() => setShowPassword((wasShown) => !wasShown)}
+              >
+                {showPassword ? "Hide" : "Show"}
+              </button>
+            </span>
             <span className="hint">
               At least 8 characters. Longer passphrases work better than short
               complicated ones.
@@ -143,7 +174,7 @@ export default function RegisterPage() {
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
             <p className="text-sm text-ink-faint">
               Already registered?{" "}
-              <Link href="/login" className="link">
+              <Link href={loginHref} className="link">
                 Sign in
               </Link>
             </p>

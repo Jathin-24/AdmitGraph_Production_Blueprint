@@ -4,45 +4,22 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
-import { getMe, getToken, setToken, type AuthUser } from "../lib/api";
+import { useAuth } from "../lib/auth";
 
 /**
  * Session control for the nav: "Sign in" link when anonymous, otherwise a
  * small account popover (email + name + sign out).
  *
- * Token state is only read inside effects, so server and client render the
- * same markup on first paint (no localStorage hydration mismatch).
+ * Reads the global AuthProvider rather than fetching /auth/me itself — the
+ * nav lives in the root layout, which Next.js never remounts on client-side
+ * navigation, so a local fetch would stay stale ("still says Sign in after
+ * logging in") until a full page reload.
  */
 export function AccountMenu() {
   const router = useRouter();
-  const [user, setUser] = useState<AuthUser | null>(null);
-  const [ready, setReady] = useState(false);
+  const { user, status, signOut } = useAuth();
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (getToken() === null) {
-      setReady(true);
-      return () => {
-        cancelled = true;
-      };
-    }
-    getMe()
-      .then((response) => {
-        if (!cancelled) setUser(response.user);
-      })
-      .catch(() => {
-        // apiFetch already dropped the invalid token on 401.
-        if (!cancelled) setUser(null);
-      })
-      .finally(() => {
-        if (!cancelled) setReady(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -62,20 +39,26 @@ export function AccountMenu() {
     };
   }, [open]);
 
-  function signOut(): void {
-    setToken(null);
-    setUser(null);
+  function handleSignOut(): void {
+    signOut();
     setOpen(false);
     router.push("/");
   }
 
-  if (!ready) return null;
+  // Session still resolving: keep the header slot empty rather than flashing
+  // the wrong control.
+  if (status === "loading") return null;
 
   if (user === null) {
     return (
-      <Link href="/login" className="btn-ghost btn-sm">
-        Sign in
-      </Link>
+      <>
+        <Link href="/login" className="btn-ghost btn-sm">
+          Sign in
+        </Link>
+        <Link href="/register" className="btn-primary btn-sm">
+          Get started free
+        </Link>
+      </>
     );
   }
 
@@ -112,7 +95,7 @@ export function AccountMenu() {
             type="button"
             role="menuitem"
             className="btn-ghost btn-sm w-full justify-start"
-            onClick={signOut}
+            onClick={handleSignOut}
           >
             Sign out
           </button>
