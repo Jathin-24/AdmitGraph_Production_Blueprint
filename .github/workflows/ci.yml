@@ -8,6 +8,22 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: admitgraph
+          POSTGRES_PASSWORD: admitgraph_dev_password
+          POSTGRES_DB: admitgraph
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      AGRAPH_TEST_DATABASE_URL: postgresql+asyncpg://admitgraph:admitgraph_dev_password@localhost:5433/admitgraph_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -15,7 +31,7 @@ jobs:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
         working-directory: backend
-      - run: ruff check app tests
+      - run: ruff check app tests scripts
         working-directory: backend
       - run: mypy app
         working-directory: backend

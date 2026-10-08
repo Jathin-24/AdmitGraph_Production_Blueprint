@@ -36,27 +36,48 @@ See:
 - `tests/TEST_PLAN.md`
 
 ## Local setup
+
+Infra first (Postgres on host port **5433**, Redis on 6379):
 ```bash
-cp .env.example .env
-
-# Backend
-cd backend
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\Activate.ps1
-pip install -e ".[dev]"
-uvicorn app.main:app --reload
-
-# Frontend
-cd frontend
-npm ci
-npm run dev
-
-# Infra (Postgres + Redis)
 docker compose -f deployment/docker-compose.yml up -d postgres redis
 ```
 
+Backend:
+```bash
+cd backend
+python -m venv .venv
+.venv\Scripts\Activate.ps1          # Windows (source .venv/bin/activate on macOS/Linux)
+pip install -e ".[dev]"
+
+# Configuration: backend/.env (gitignored) — copy the keys from .env.example
+#   DATABASE_URL, REDIS_URL, SERPAPI_API_KEY, LLM_* keys
+#   JWT_SECRET (required in production), ADMIN_EMAILS
+#   EMAIL_ENABLED=false -> emails are written to a local file outbox; set SMTP_* + EMAIL_ENABLED=true to really send
+#   SCHEDULER_ENABLED=true -> automatic monitor checks / freshness / reminders
+
+alembic upgrade head                 # apply schema (required on first run)
+python -m scripts.seed_demo          # optional: demo persona + fixtures
+
+uvicorn app.main:app --port 8000
+```
+
+Frontend:
+```bash
+cd frontend
+npm ci
+npm run dev                          # http://localhost:3000
+```
+
+Seeding/alternates: tests provision their own scratch database (`admitgraph_test`) automatically and skip when Postgres is down.
+
+## URLs
+- App: http://localhost:3000
+- API: http://localhost:8000/api/v1 — Swagger: http://localhost:8000/api/v1/docs
+- Accounts: register/login at `/register` + `/login` (email + password). Anonymous visitors use the local demo session (`demo@admitgraph.local`, ADMIN). Emails in `ADMIN_EMAILS` become admins on registration.
+- Instant demo: research page → "Run the full example" (replays a captured real run; no SerpApi/LLM credits).
+
 ## Checks
 ```bash
-cd backend && ruff check app tests && mypy app && pytest -q
-cd frontend && npm run lint && npx tsc --noEmit && npm run build
+cd backend && ruff check app tests scripts && mypy app && pytest -q
+cd frontend && npm run lint && npx tsc --noEmit && npm run build   # stop `npm run dev` before build
 ```

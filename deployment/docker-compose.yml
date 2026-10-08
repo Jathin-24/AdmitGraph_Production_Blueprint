@@ -36,6 +36,29 @@ services:
       SERPAPI_API_KEY: ${SERPAPI_API_KEY:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-}
+      # Multi-endpoint LLM chain (openrouter,groq,... comma-separated lists)
+      LLM_PROVIDERS: ${LLM_PROVIDERS:-}
+      LLM_API_KEYS: ${LLM_API_KEYS:-}
+      LLM_MODELS: ${LLM_MODELS:-}
+      # Auth
+      JWT_SECRET: ${JWT_SECRET:-}
+      JWT_TTL_SECONDS: ${JWT_TTL_SECONDS:-604800}
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
+      # Mail (disabled -> local file outbox inside the container)
+      EMAIL_ENABLED: ${EMAIL_ENABLED:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
+      EMAIL_FROM: ${EMAIL_FROM:-AdmitGraph <no-reply@admitgraph.local>}
+      # Scheduler + SerpApi reliability
+      SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-true}
+      SCHEDULER_TICK_SECONDS: ${SCHEDULER_TICK_SECONDS:-30}
+      MONITOR_MAX_CHECKS_PER_TICK: ${MONITOR_MAX_CHECKS_PER_TICK:-5}
+      SERPAPI_CACHE_TTL_SECONDS: ${SERPAPI_CACHE_TTL_SECONDS:-21600}
+      SERPAPI_MAX_CONCURRENCY: ${SERPAPI_MAX_CONCURRENCY:-3}
+      SERPAPI_CIRCUIT_THRESHOLD: ${SERPAPI_CIRCUIT_THRESHOLD:-5}
     ports:
       - "8000:8000"
     depends_on:
