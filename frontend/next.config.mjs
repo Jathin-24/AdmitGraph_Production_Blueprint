@@ -40,10 +40,16 @@ const connectSrc = [
   .filter(Boolean)
   .join(" ");
 
+// Next dev's react-refresh runtime evaluates strings (new Function) to hot
+// swap modules — without 'unsafe-eval' the whole app crashes during
+// bootstrap in `next dev` and the page never hydrates (infinite spinner).
+// Production bundles never eval, so the deployed policy stays strict.
+const scriptSrc = ["'self'", "'unsafe-inline'", ...(isDev ? ["'unsafe-eval'"] : [])].join(" ");
+
 const contentSecurityPolicy = [
   "default-src 'self'",
   "base-uri 'self'",
-  "script-src 'self' 'unsafe-inline'",
+  `script-src ${scriptSrc}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
   "font-src 'self'",
