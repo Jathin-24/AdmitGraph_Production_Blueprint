@@ -106,6 +106,33 @@ describe("apiFetch", () => {
     expect((err as ApiError).code).toBe("UNAUTHENTICATED");
   });
 
+  it("times out a request that never settles instead of loading forever", async () => {
+    // Regression: a browser holding keep-alive sockets to a restarted backend
+    // left /onboarding on its spinner indefinitely — the fetch never resolved
+    // and never rejected. The client must abort and surface a typed TIMEOUT.
+    vi.useFakeTimers();
+    try {
+      // Faithful to real fetch: reject when the abort signal fires.
+      fetchMock.mockImplementationOnce(
+        (_url: unknown, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () =>
+              reject(new DOMException("The operation was aborted.", "AbortError"))
+            );
+          })
+      );
+      const pending = apiFetch("/onboarding/schema").catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(20_000);
+      const err = await pending;
+      expect(err).toBeInstanceOf(ApiError);
+      expect((err as ApiError).code).toBe("TIMEOUT");
+      expect((err as ApiError).status).toBe(0);
+      expect((err as ApiError).message).toContain("did not answer within 20s");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("falls back to a generic message when the error body is not JSON", async () => {
     fetchMock.mockImplementationOnce(async () =>
       responseWith(502, async () => {

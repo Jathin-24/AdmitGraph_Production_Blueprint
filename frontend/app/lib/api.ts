@@ -121,6 +121,12 @@ export interface ResearchEvents {
   steps: ResearchStep[];
 }
 
+/** Default ceiling for a single API call. A request that never settles (for
+ *  example a browser holding keep-alive sockets to a backend that has since
+ *  restarted) must surface as a typed error the UI can render with Retry —
+ *  never an endless "Loading…" spinner. */
+const REQUEST_TIMEOUT_MS = 20_000;
+
 /** Authenticated JSON client — W5 imports this from api.ts (PLAN.md
  *  cross-WS contract). Every request carries the stored bearer token; never
  *  call bare `fetch()` for API reads or a signed-in user silently reads the
@@ -128,20 +134,40 @@ export interface ResearchEvents {
 export async function apiFetch<T>(
   path: string,
   init?: RequestInit,
-  parser?: LooseParser<T>
+  parser?: LooseParser<T>,
+  timeoutMs: number = REQUEST_TIMEOUT_MS
 ): Promise<T> {
   const hadToken = getToken() !== null;
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    // Merge instead of letting `...init` replace the whole headers object:
-    // defaults < caller headers < auth, so passing init.headers can no
-    // longer drop the Authorization header, and the auth token always wins.
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-      ...authHeaders(),
-    },
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      ...init,
+      // A caller-supplied signal keeps control; otherwise the timeout owns it.
+      signal: init?.signal ?? controller.signal,
+      // Merge instead of letting `...init` replace the whole headers object:
+      // defaults < caller headers < auth, so passing init.headers can no
+      // longer drop the Authorization header, and the auth token always wins.
+      headers: {
+        "Content-Type": "application/json",
+        ...(init?.headers ?? {}),
+        ...authHeaders(),
+      },
+    });
+  } catch (err) {
+    if (controller.signal.aborted) {
+      throw new ApiError(
+        `The API at ${API_BASE} did not answer within ${Math.round(timeoutMs / 1000)}s. ` +
+          "It may be restarting — try again.",
+        0,
+        "TIMEOUT"
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     let code: string | null = null;
     let message = `Request failed (${res.status})`;
