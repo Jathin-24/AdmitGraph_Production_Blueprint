@@ -3,9 +3,7 @@
 .env.*
 !.env.example
 __pycache__/
-.pytest_cache/
 node_modules/
-.next/
 dist/
 build/
 *.pyc
@@ -13,5 +11,19 @@ coverage/
 .venv/
 *.egg-info/
 *.log
-# runtime artifacts (local mail outbox, scratch)
-backend/var/
+# python tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+# next.js / typescript build artifacts
+.next/
+frontend/out/
+*.tsbuildinfo
+# runtime artifacts (local mail outbox, uploaded files, scratch) —
+# keep the directories in git, ignore their contents.
+backend/var/*
+!backend/var/outbox/
+backend/var/outbox/*
+!backend/var/outbox/.gitkeep

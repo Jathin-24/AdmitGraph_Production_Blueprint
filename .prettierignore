@@ -1,0 +1,25 @@
+# Dependencies and build output
+node_modules/
+.next/
+out/
+build/
+dist/
+coverage/
+.venv/
+frontend/app/fonts/
+
+# Lockfiles and generated artefacts
+package-lock.json
+database/schema.sql
+api/openapi.json
+frontend/app/lib/api-types.generated.ts
+backend/var/
+*.min.js
+
+# Binaries
+*.woff
+*.woff2
+*.ico
+*.png
+*.jpg
+*.pdf

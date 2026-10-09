@@ -1,4 +1,12 @@
-"""One-off: grant the local demo user the ADMIN role (admin endpoint gating)."""
+"""One-off: grant the local demo user the ADMIN role.
+
+NOTE on what this does *not* do: admin endpoints require an **authenticated**
+ADMIN bearer token — anonymous callers are always `403 FORBIDDEN`, whatever
+role the demo row carries (see `app/api/v1/admin.py`). Running this only helps
+if you can actually sign in as ``demo@admitgraph.local`` (the seeded demo
+account is passwordless by construction, so it cannot log in). Grant
+admin by adding your own address to ``ADMIN_EMAILS`` instead.
+"""
 
 import asyncio
 import sys

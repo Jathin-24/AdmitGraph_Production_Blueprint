@@ -2,6 +2,12 @@
 
 Base URL: `/api/v1`
 
+> Machine-readable companion: `api/openapi.json` is exported from the FastAPI
+> app (`cd backend && python -m scripts.export_openapi`) and is the source of
+> truth for the frontend's generated types (`npm run gen:api-types`). CI fails
+> if either artefact drifts. This document covers semantics that a schema
+> cannot express.
+
 All JSON errors:
 ```json
 {
@@ -16,13 +22,16 @@ All JSON errors:
 
 Every response — success or error — carries `X-Request-ID` (echoed from the request
 header when the client sends one, generated otherwise) and `X-Response-Time-Ms`.
-`401 UNAUTHENTICATED` (bad/expired bearer token), `413 PAYLOAD_TOO_LARGE` and
-`429 RATE_LIMITED` are produced by middleware but use this same envelope, so
-`error.request_id` is always present and equals the `X-Request-ID` header.
+`401 UNAUTHENTICATED` / `401 TOKEN_STALE` (bad/expired vs. superseded bearer
+token), `413 PAYLOAD_TOO_LARGE` and `429 RATE_LIMITED` are produced by
+middleware but use this same envelope, so `error.request_id` is always present
+and equals the `X-Request-ID` header.
 
 ## Health
-GET `/health`
-GET `/health/ready`
+GET `/health` — liveness, `{"status": "ok"}` (or equivalent) without touching the DB
+GET `/health/ready` — `200 {"status": "ready"}` only when the database answers a
+ping; **`503`** when it does not (load balancers and the compose healthcheck must
+never treat an un-backed instance as ready).
 
 ## Auth
 POST `/auth/register` — body `{email, password, full_name?}` → 201 `{token, user}`
@@ -36,7 +45,31 @@ characters), `409 EMAIL_TAKEN`, `401 INVALID_CREDENTIALS` on login (never reveal
 whether the email exists), `401 UNAUTHENTICATED` on `/auth/me` without a valid token.
 Without any token, requests run as the local anonymous demo profile; an invalid or
 expired token is a 401 so clients drop the stale session instead of writing to the
-wrong account.
+wrong account. A token minted **before the user's last password change** is
+`401` with code `TOKEN_STALE` (distinct from `UNAUTHENTICATED`) so the client can
+tell "log in again" from "session never existed".
+
+### Password reset + email verification (P2-14)
+POST `/auth/forgot` — body `{email}` → **202** `{"status": "accepted"}`
+POST `/auth/reset` — body `{token, password}` → 200 `{"status": "reset"}`
+POST `/auth/verify-request` — body `{email}` → **202** `{"status": "accepted"}`
+POST `/auth/verify` — body `{token}` → 200 `{"status": "verified"}`
+
+- `forgot` and `verify-request` **always** answer the same 202 whether or not the
+  address exists (account existence never leaks); an unknown address simply
+  produces no email. Links are single-use, expire, and are emailed through the
+  same SMTP-or-file-outbox path as notifications (`frontend_url` + `/reset-password?token=…`
+  or `/verify-email?token=…`).
+- `reset`/`verify` validate the token **first**: an unknown, expired or already-used
+  token is `400 INVALID_TOKEN` (message never mentions "password", so the UI can
+  route between token-error and password-error states). A weak password on a valid
+  token is `400 VALIDATION_ERROR`.
+- The emailed verification link opens the frontend `/verify-email` page, which
+  consumes the token via `POST /auth/verify` and, for a signed-in user, offers
+  a "Resend verification email" action (`POST /auth/verify-request`).
+- Email-bomb protection: `forgot` + `verify-request` share a dedicated budget of
+  **5 requests per minute per caller IP and per target email** (either bucket
+  spent → `429 RATE_LIMITED`), separate from the general rate limit below.
 
 ## Profile
 GET `/me/profile`
@@ -137,6 +170,19 @@ GET `/programs/{program_id}/requirements`
 GET `/programs/{program_id}/evidence`
 POST `/programs/{program_id}/save`
 DELETE `/programs/{program_id}/save`
+
+`GET /programs` query parameters:
+- `page` (≥1, default 1), `page_size` (1–100, default 20)
+- `saved_only` (bool, default false) — only the caller's saved programs
+- `q` (≤200 chars) — case-insensitive substring over program / university / city
+- `country` (ISO code, ≤8 chars) and `degree_level` (≤64 chars) —
+  case-insensitive exact matches
+- `sort` — `fit_score` (default) | `name` | `deadline`
+
+Response: `{items: [{id, name, country_code, degree_type, field_of_study,
+official_url}], page, page_size, total, next_cursor}` (`next_cursor` is the next
+page number as a string, or null on the last page). Unknown program id →
+`404 NOT_FOUND`.
 
 ## Strategy
 GET `/strategies`
@@ -321,8 +367,19 @@ GET `/evidence/{evidence_id}/conflicts`
 POST `/evidence/{evidence_id}/recheck`
 POST `/evidence/conflicts/{conflict_id}/resolve`
 
-Evidence and programs are shared catalog content: ids are readable by any caller
-(no owner scoping), an unknown id is `404 NOT_FOUND`.
+Evidence reads are **ownership-scoped** (P1-10), following the API's
+404-not-403 convention (an unknown id and a foreign id are indistinguishable):
+1. **Attached** — the evidence (or any member of its conflict group) is attached
+   to the caller's profile: via the caller's risk / fit / eligibility links,
+   `roadmap_tasks.evidence_ids`, or a subject-program link (saved program,
+   application plan, fit assessment, monitor subscription or risk).
+2. **Shared corpus** — the caller is in demo mode (anonymous traffic, or the
+   `demo@admitgraph.local` account) **and** the evidence is not attached to any
+   *non-demo* profile. Unclaimed evidence belongs to everyone; evidence another
+   real student has attached is theirs alone.
+
+Anything else → `404 NOT_FOUND`. Programs are shared catalog rows: any caller
+may read them, an unknown id is `404 NOT_FOUND`.
 
 `GET /evidence/{evidence_id}/conflicts` →
 `{"evidence_id": "uuid", "conflicts": [{id, conflict_key, description,
@@ -335,8 +392,13 @@ extraction). Returns the evidence object plus:
 ```
 `refreshed: true` means the stored claim was re-verified (freshness refreshed) or
 a differing value was stored as a **new** evidence row (`new_evidence_id`) with
-conflict detection run; the original row is never overwritten. Errors:
-- `404 NOT_FOUND` — unknown evidence id.
+conflict detection run; the original row is never overwritten. Errors, in the
+order they are evaluated:
+- `404 NOT_FOUND` — unknown evidence id, or evidence outside the caller's scope
+  (scoping rules above).
+- `429 RATE_LIMITED` — either the per-IP middleware rate limit (see API
+  conventions) or the per-caller recheck cooldown: at most **5 rechecks per 60
+  seconds** per user (sliding window; direct service calls bypass the cooldown).
 - `409 PROVIDER_UNAVAILABLE` — `SERPAPI_API_KEY` is not configured; no fake data
   is ever substituted.
 - `502` (provider code) — the upstream search itself failed.
@@ -366,6 +428,11 @@ Errors: `404 NOT_FOUND` (unknown conflict or evidence id), `409 ALREADY_RESOLVED
 GET `/documents`
 POST `/documents`
 PATCH `/documents/{document_id}`
+POST `/documents/{document_id}/file` — multipart `file`
+POST `/documents/{document_id}/upload` — identical alias (PLAN.md spelling; the
+frontend tries both)
+GET `/documents/{document_id}/file` — streams the stored file back
+DELETE `/documents/{document_id}/file` — clears the stored file
 
 `GET` lazily provisions the eight standard readiness checklist items
 (`transcript, passport, language_score, cv, sop, lors, portfolio,
@@ -374,6 +441,16 @@ financial_proof`) and returns `{items: [{id, document_type, status, expires_at}]
 `PATCH` body `{status?, notes?}` → `{id, status}` where `status` is one of
 `TODO | IN_PROGRESS | DONE | BLOCKED | SKIPPED`. Documents are profile-scoped:
 another profile's document id is `404 NOT_FOUND`, never 403.
+
+File endpoints:
+- Upload accepts `pdf/png/jpg/jpeg/docx` (extension **and** declared content type
+  must match the allowlist), max **10 MB**. Errors: `422 VALIDATION_ERROR`
+  (missing filename, disallowed type, empty body, missing/invalid
+  `document_type` on `POST`), `413 FILE_TOO_LARGE` (file over 10 MB — distinct
+  from the middleware's `413 PAYLOAD_TOO_LARGE` body cap), `404 NOT_FOUND`
+  (foreign document, or no stored file on `GET`/`DELETE`).
+- `GET .../file` answers with the stored media type and `Content-Disposition`;
+  a document with no file is `404 NOT_FOUND`.
 
 ## Notifications
 GET `/notifications` → `{"items": [...], "unread_count": <int>}` (newest first, capped at 50)
@@ -391,8 +468,13 @@ POST `/strategies/{strategy_id}/export/pdf`
 GET `/admin/search-usage`
 GET `/admin/research-runs`
 
-Both require role `ADMIN`: authenticated non-admins get `403 FORBIDDEN`
-(anonymous callers are judged by the local demo user's stored role).
+Both require an **authenticated** `ADMIN` caller. Anonymous callers (no bearer
+token — including the local demo user, whose stored role is `STUDENT`) and
+authenticated non-admins alike get `403 FORBIDDEN`; there is no demo-role
+fallback. Invalid tokens are rejected earlier as `401`.
+
+`GET /metrics` (API root, **not** under `/api/v1`) — Prometheus text exposition
+format, unauthenticated.
 
 Do not expose SerpApi keys or raw provider credentials.
 
@@ -407,17 +489,35 @@ Do not expose SerpApi keys or raw provider credentials.
 - Every response gets `X-Request-ID` (plus `X-Response-Time-Ms`).
 - Never return provider secrets.
 - **Cross-user scoping**: strategies, research runs, monitor subscriptions,
-  documents and notifications that belong to another profile return
-  `404 NOT_FOUND` (never 403) — a foreign id is indistinguishable from a
-  non-existent one. Programs and evidence are shared catalog rows and are not
-  owner-scoped.
-- **Rate limits** (per client IP, 60-second window, default
+  documents, notifications **and evidence/conflicts** that belong to another
+  profile return `404 NOT_FOUND` (never 403) — a foreign id is indistinguishable
+  from a non-existent one. Programs are shared catalog rows and are not
+  owner-scoped (see the Evidence section for the evidence access matrix).
+- **Rate limits** (per client IP, 60-second fixed window, default
   `rate_limit_per_minute` = 60/min, `429 RATE_LIMITED` envelope): counted for
   `POST /research/runs`, `POST /research/plan`, `POST /research/demo`,
-  `POST /monitor/subscriptions`, `POST /auth/login`, `POST /auth/register` and
-  every `POST /evidence/{evidence_id}/recheck`. All other paths and all
-  non-POST methods are excluded from the counter.
-- **Body size limit**: `POST`/`PATCH`/`PUT` bodies over 1,000,000 bytes are
-  rejected with `413 PAYLOAD_TOO_LARGE` before reaching the route.
+  `POST /monitor/subscriptions`, `POST /auth/login`, `POST /auth/register`,
+  `POST /evidence/{evidence_id}/recheck` and
+  `POST /monitor/subscriptions/{id}/check`. All other paths and all other
+  methods are excluded from the counter (`_RATE_LIMITED_GET_PATHS` is empty —
+  every provider-spend GET would be listed there). Separate budget:
+  `POST /auth/forgot` + `POST /auth/verify-request` at 5/min per IP **and** per
+  target email. The limiter is **per process** (in-memory), so multi-worker
+  deployments multiply these budgets.
+- **Research run caps** (P1-7): a user at the concurrent-run cap gets
+  `429 RESOURCE_EXHAUSTED` with an actionable message from `POST /research/plan`
+  and `POST /research/runs` instead of queueing forever.
+- **Daily search budget** (P1-8): `POST /research/plan` and `POST /research/runs`
+  count today's `search_runs` rows (UTC) and answer
+  `429 BUDGET_EXCEEDED` ("Daily research budget reached — try again tomorrow")
+  once `AGRAPH_DAILY_SEARCH_BUDGET` (default 500, `0` = unlimited) is spent;
+  `AGRAPH_DAILY_SEARCH_BUDGET_PER_USER` (default `0` = unlimited) caps the same
+  rows per account via `search_runs.user_id`. A blocked request writes no plan
+  row and dispatches nothing.
+- **Body size limit**: `POST`/`PATCH`/`PUT` bodies over **11,000,000 bytes**
+  (11 MB) are rejected with `413 PAYLOAD_TOO_LARGE` before reaching the route.
+- **Security headers** on every response: `X-Content-Type-Options: nosniff`,
+  `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
+  `Content-Security-Policy: default-src 'self'`.
 - CORS allows the headers `Content-Type`, `Authorization`, `Idempotency-Key`
   and `X-Request-ID`.

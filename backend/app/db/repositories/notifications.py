@@ -1,11 +1,13 @@
 """Notification inbox queries.
 
 Backs the ``app.api.v1.notifications`` router; the router keeps the response
-shaping (item dicts, unread counts, the read-at stamping decision).
+shaping (item dicts, unread counts, the read-at stamping decision). The
+producer-side dedupe query used by ``app.services.notifications`` lives here
+too, so no SQL statement appears under the service.
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -69,3 +71,33 @@ async def mark_notifications_read(
         .values(read_at=datetime.now(UTC))
     )
     await session.commit()
+
+
+async def has_recent_notification(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    notification_type: str,
+    payload_key: str,
+    payload_value: str,
+    *,
+    days: int | None = 7,
+) -> bool:
+    """True when this user already got *notification_type* for that payload value.
+
+    ``days=None`` dedupes forever (used for roadmap reminders); the default
+    window is 7 days (stale-source / conflict alerts).
+    """
+    stmt = (
+        select(Notification.id)
+        .where(
+            Notification.user_id == user_id,
+            Notification.type == notification_type,
+            Notification.payload[payload_key].astext == str(payload_value),
+        )
+        .limit(1)
+    )
+    if days is not None:
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        stmt = stmt.where(Notification.created_at > cutoff)
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    return row is not None

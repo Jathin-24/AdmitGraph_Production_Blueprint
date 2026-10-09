@@ -1,9 +1,10 @@
 """Admin/observability endpoints. Never expose provider credentials.
 
 All routes are gated by `require_admin_access` (router-level dependency):
-authenticated callers must carry the ADMIN role; anonymous callers are judged
-by the local demo user's role in the DB (ADMIN locally → the demo stays usable,
-a STUDENT demo role revokes anonymous access in one UPDATE).
+the role must come from the verified bearer token (auth middleware decodes
+it once per request). Anonymous callers are ALWAYS 403 FORBIDDEN — the demo
+account's stored role is deliberately not consulted, because a demo user
+seeded ADMIN used to hand anonymous visitors the admin stats.
 """
 
 from __future__ import annotations
@@ -18,20 +19,15 @@ from app.core.security import current_user_role
 from app.db.models import RunStatus
 from app.db.repositories import admin as admin_repo
 from app.db.session import get_session
-from app.services.profile import get_or_create_default_user
 
 
-async def require_admin_access(session: AsyncSession = Depends(get_session)) -> None:
-    """403 unless the caller may use admin routes (see module docstring)."""
+def require_admin_access() -> None:
+    """403 unless the caller is an authenticated ADMIN (see module docstring)."""
     role = current_user_role()
-    if role is not None:
-        # Authenticated: role comes straight from the verified bearer token.
-        if role != "ADMIN":
-            raise AppError(403, "FORBIDDEN", "Administrator access required")
-        return
-    # Anonymous: consult the local demo user's stored role (per-request only).
-    demo = await get_or_create_default_user(session)
-    if str(demo.role) != "ADMIN":
+    if role != "ADMIN":
+        # role is None for anonymous callers (no bearer token): always 403
+        # FORBIDDEN — never a demo-role fallback. Invalid tokens never reach
+        # here: the auth middleware rejects them earlier with 401.
         raise AppError(403, "FORBIDDEN", "Administrator access required")
 
 

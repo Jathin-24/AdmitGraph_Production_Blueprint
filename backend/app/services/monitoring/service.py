@@ -29,7 +29,6 @@ from typing import Any, cast
 from uuid import UUID
 
 import httpx
-from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
@@ -38,7 +37,6 @@ from app.db.models import (
     ConfidenceLevel,
     Evidence,
     EvidenceStatus,
-    Institution,
     MonitorSnapshot,
     MonitorSubscription,
     Program,
@@ -46,6 +44,7 @@ from app.db.models import (
     SourceAuthority,
     StudentProfile,
 )
+from app.db.repositories import monitor as monitor_repo
 from app.services.evidence.extraction import content_hash
 from app.services.evidence.freshness import freshness_deadline
 from app.services.evidence.llm_extract import LLMClaim, extract_claims
@@ -147,10 +146,7 @@ def _domain_of(url: str) -> str | None:
 
 
 async def _retrieved_map(session: AsyncSession, ids: list[UUID]) -> dict[UUID, datetime]:
-    if not ids:
-        return {}
-    rows = await session.execute(select(Evidence.id, Evidence.retrieved_at).where(Evidence.id.in_(ids)))
-    return {row_id: retrieved for row_id, retrieved in rows.all()}
+    return await monitor_repo.evidence_retrieved_map(session, ids)
 
 
 def _is_live(retrieved: dict[UUID, datetime], snapshot: MonitorSnapshot) -> bool:
@@ -226,18 +222,11 @@ async def _evidence_domain(
     session: AsyncSession, subscription: MonitorSubscription, field_key: str
 ) -> str | None:
     """Official domain hint from the evidence already stored for this subject."""
-    stmt = (
-        select(Source.domain)
-        .join(Evidence, Evidence.source_id == Source.id)
-        .where(Evidence.subject_type == "program")
-        .order_by(Evidence.retrieved_at.desc())
-        .limit(1)
+    domain = await monitor_repo.latest_evidence_source_domain(
+        session,
+        program_id=subscription.program_id,
+        claim_types=_CACHED_CLAIM_TYPES.get(field_key, (field_key,)),
     )
-    if subscription.program_id is not None:
-        stmt = stmt.where(Evidence.subject_id == subscription.program_id)
-    else:
-        stmt = stmt.where(Evidence.claim_type.in_(_CACHED_CLAIM_TYPES.get(field_key, (field_key,))))
-    domain = (await session.execute(stmt)).scalar_one_or_none()
     return _domain_of(domain) if domain else None
 
 
@@ -253,11 +242,9 @@ async def _build_query(
             name = program.canonical_name
             domain = _domain_of(program.official_url) if program.official_url else None
             if domain is None:
-                institution_domain = (
-                    await session.execute(
-                        select(Institution.domain).where(Institution.id == program.institution_id)
-                    )
-                ).scalar_one_or_none()
+                institution_domain = await monitor_repo.institution_domain(
+                    session, program.institution_id
+                )
                 domain = _domain_of(institution_domain) if institution_domain else None
     if domain is None:
         domain = await _evidence_domain(session, subscription, field_key)
@@ -299,9 +286,7 @@ async def _persist_live_evidence(
     if not link:
         return None  # no citable URL -> no evidence row (never fabricate a source)
     canonical = link.split("#", 1)[0]
-    source = (
-        await session.execute(select(Source).where(Source.canonical_url == canonical))
-    ).scalar_one_or_none()
+    source = await monitor_repo.source_by_canonical_url(session, canonical)
     if source is None:
         source = Source(
             url=link,
@@ -382,16 +367,12 @@ async def _observe_cached(
     session: AsyncSession, subscription: MonitorSubscription, field_key: str
 ) -> _Observation:
     """Honest fallback: compare against the latest stored evidence for the field."""
-    claim_types = _CACHED_CLAIM_TYPES.get(field_key, (field_key,))
-    conditions = [Evidence.claim_type.in_(claim_types)]
-    if field_key == "scholarship":
-        conditions.append(Evidence.normalized_claim.ilike("%scholarship%"))
-    stmt = select(Evidence).where(Evidence.subject_type == "program", or_(*conditions))
-    if subscription.program_id is not None:
-        stmt = stmt.where(Evidence.subject_id == subscription.program_id)
-    latest = (
-        await session.execute(stmt.order_by(Evidence.retrieved_at.desc()).limit(1))
-    ).scalar_one_or_none()
+    latest = await monitor_repo.latest_cached_evidence(
+        session,
+        program_id=subscription.program_id,
+        claim_types=_CACHED_CLAIM_TYPES.get(field_key, (field_key,)),
+        scholarship_like=field_key == "scholarship",
+    )
     if latest is None:
         return _Observation(None, "cached", ())
     return _Observation(to_scalar(latest.extracted_value, field_key), "cached", (str(latest.id),))
@@ -442,17 +423,7 @@ class MonitoringService:
         now = datetime.now(UTC)
 
         # 1. previous evidence (baseline from the last snapshot, if any)
-        previous = (
-            await session.execute(
-                select(MonitorSnapshot)
-                .where(
-                    MonitorSnapshot.subscription_id == subscription_id,
-                    MonitorSnapshot.field_key == field_key,
-                )
-                .order_by(MonitorSnapshot.checked_at.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
+        previous = await monitor_repo.latest_snapshot(session, subscription_id, field_key)
         old_value = to_scalar(previous.new_value, field_key) if previous is not None else None
 
         # 2+3. bounded fresh search + extraction, or honest cached comparison
@@ -538,17 +509,7 @@ async def _notify_conflicts(
     """
     if subscription.program_id is None:
         return
-    conflicting = (
-        await session.execute(
-            select(Evidence.id)
-            .where(
-                Evidence.subject_type == "program",
-                Evidence.subject_id == subscription.program_id,
-                Evidence.status == EvidenceStatus.CONFLICTING,
-            )
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+    conflicting = await monitor_repo.conflicting_evidence_id(session, subscription.program_id)
     if conflicting is None:
         return
     profile = await session.get(StudentProfile, subscription.profile_id)

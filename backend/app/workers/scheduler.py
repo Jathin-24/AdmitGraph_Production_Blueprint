@@ -16,6 +16,12 @@ try/except-per-item so a single failure never kills the loop:
 * roadmap reminders for tasks due within 48h (deduped per task forever).
 
 ``run_tick()`` is public so tests can await a single tick directly.
+
+Replica safety (audit P1-7): each tick holds a PostgreSQL advisory lock
+(`app.workers.locks`) for its whole duration, so only ONE replica/uvicorn
+worker ever does the work — the others skip cheaply. The process-local
+``_tick_in_progress`` flag remains as the first line of defence inside a
+single process (and for DB-less unit tests).
 """
 
 from __future__ import annotations
@@ -41,6 +47,7 @@ from app.db.models import (
 from app.db.session import get_engine
 from app.services.monitoring.service import MonitoringService
 from app.services.notifications import create_notification, has_recent_notification
+from app.workers.locks import SCHEDULER_TICK_LOCK, try_advisory_lock
 
 log = logging.getLogger(__name__)
 
@@ -106,7 +113,12 @@ async def _loop() -> None:
 
 
 async def run_tick() -> dict[str, int]:
-    """Run one bounded tick; returns a summary (also used directly by tests)."""
+    """Run one bounded tick; returns a summary (also used directly by tests).
+
+    Skips (all-zero summary) when either this process is already ticking or
+    another replica holds the cross-process advisory lock — a second
+    concurrent tick must never duplicate the work (audit P1-7).
+    """
     global _tick_in_progress
     summary = dict.fromkeys(_SUMMARY_KEYS, 0)
     if _tick_in_progress:
@@ -115,11 +127,16 @@ async def run_tick() -> dict[str, int]:
     _tick_in_progress = True
     try:
         settings = get_settings()
-        maker = async_sessionmaker(get_engine(), expire_on_commit=False)
-        async with maker() as session:
-            await _run_due_checks(session, settings, summary)
-            await _freshness_sweep(session, summary)
-            await _roadmap_reminders(session, summary)
+        engine = get_engine()
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with try_advisory_lock(engine, SCHEDULER_TICK_LOCK) as acquired:
+            if not acquired:
+                log.info("scheduler tick skipped: another replica holds the tick lock")
+                return summary
+            async with maker() as session:
+                await _run_due_checks(session, settings, summary)
+                await _freshness_sweep(session, summary)
+                await _roadmap_reminders(session, summary)
     finally:
         _tick_in_progress = False
     log.info(

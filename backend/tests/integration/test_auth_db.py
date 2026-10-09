@@ -137,7 +137,10 @@ async def test_cross_user_profile_isolation(api: AsyncClient) -> None:
 async def test_admin_gating(
     api: AsyncClient, db_session: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The local demo account decides anonymous access; make sure it is ADMIN.
+    # Deliberately keep the demo account ADMIN: the OLD code consulted this
+    # row's role for anonymous callers (seeded ADMIN → anonymous 200), so the
+    # regression test must prove that even a seeded-ADMIN demo user no longer
+    # opens /admin/* without a verified ADMIN token.
     from app.services.profile import DEMO_EMAIL
 
     demo = (
@@ -157,9 +160,13 @@ async def test_admin_gating(
     assert error["code"] == "FORBIDDEN"
     assert error["message"] == "Administrator access required"
 
-    anonymous = await api.get("/api/v1/admin/search-usage")
-    assert anonymous.status_code == 200, anonymous.text
-    assert "total_searches" in anonymous.json()
+    # Anonymous (no bearer token): always 403 FORBIDDEN on every admin route.
+    for path in ("/api/v1/admin/search-usage", "/api/v1/admin/research-runs"):
+        anonymous = await api.get(path)
+        assert anonymous.status_code == 403, f"{path}: {anonymous.text}"
+        anon_error = anonymous.json()["error"]
+        assert anon_error["code"] == "FORBIDDEN"
+        assert anon_error["message"] == "Administrator access required"
 
     # Emails in settings.admin_emails become ADMIN on register.
     admin_email = _email("boss")
@@ -168,6 +175,63 @@ async def test_admin_gating(
     assert promoted["user"]["role"] == "ADMIN"
     allowed = await api.get("/api/v1/admin/search-usage", headers=_auth(promoted["token"]))
     assert allowed.status_code == 200, allowed.text
+
+
+async def test_stale_session_for_deleted_user_is_clean_401(api: AsyncClient) -> None:
+    """A still-valid token whose account no longer exists must get 401.
+
+    It must never silently fall through to the shared demo profile (someone
+    else's data) — and the write path must not redirect to the demo account.
+    """
+    from app.core.security import create_token
+
+    ghost_token = create_token(uuid.uuid4(), "STUDENT")
+
+    read = await api.get("/api/v1/me/profile", headers=_auth(ghost_token))
+    assert read.status_code == 401
+    assert read.json()["error"]["code"] == "UNAUTHENTICATED"
+
+    write = await api.patch(
+        "/api/v1/me/profile", json={"career_goal": "Ghost goal"}, headers=_auth(ghost_token)
+    )
+    assert write.status_code == 401
+    assert write.json()["error"]["code"] == "UNAUTHENTICATED"
+
+    # The demo profile was not written behind the stale session's back ...
+    anonymous = await api.get("/api/v1/me/profile")
+    assert anonymous.status_code == 200
+    assert anonymous.json().get("career_goal") != "Ghost goal"
+
+
+async def test_pure_anonymous_demo_fallback_and_writes_keep_working(
+    api: AsyncClient,
+) -> None:
+    """Demo mode (no Authorization header at all) stays a supported feature."""
+    before = await api.get("/api/v1/me/profile")
+    assert before.status_code == 200
+    previous_goal = before.json().get("career_goal")
+
+    patched = await api.patch("/api/v1/me/profile", json={"career_goal": "Anonymous demo goal"})
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["career_goal"] == "Anonymous demo goal"
+
+    # Restore the shared demo row so later suites see their expected state.
+    restore = await api.patch("/api/v1/me/profile", json={"career_goal": previous_goal})
+    assert restore.status_code == 200, restore.text
+    assert restore.json().get("career_goal") == previous_goal
+
+
+async def test_demo_bootstrap_seeds_student_role(db_session: Any) -> None:
+    """Fresh-DB demo bootstrap must create a STUDENT, never an ADMIN."""
+    from app.services.profile import get_or_create_default_user
+
+    email = f"bootstrap-{uuid.uuid4().hex[:8]}@example.com"
+    user = await get_or_create_default_user(db_session, email=email)
+    await db_session.flush()
+    assert user.role == UserRole.STUDENT
+    # Cleanup: nobody else references this throwaway account.
+    await db_session.delete(user)
+    await db_session.commit()
 
 
 async def test_documents_scoped_to_own_profile(api: AsyncClient) -> None:

@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +21,9 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 60
 
     # --- Auth (JWT bearer + Argon2 local accounts) ---
+    # Required when APP_ENV=production (security.jwt_secret() fails closed);
+    # otherwise a random key is generated at process start and persisted to the
+    # gitignored backend/var/jwt_secret — never derived from other settings.
     jwt_secret: str = ""
     jwt_ttl_seconds: int = 7 * 24 * 3600
     admin_emails: str = ""  # comma-separated emails granted ADMIN on register
@@ -43,6 +47,31 @@ class Settings(BaseSettings):
     serpapi_cache_ttl_seconds: int = 6 * 3600
     serpapi_max_concurrency: int = 3
     serpapi_circuit_threshold: int = 5  # consecutive failures before breaker opens
+
+    # --- Password reset / email verification links (P2-14) ---
+    # Base URL of the frontend used to build {frontend_url}/reset-password?...
+    # and {frontend_url}/verify-email?... links in outgoing emails.
+    frontend_url: str = "http://localhost:3000"
+
+    # --- Document file uploads (P2-15): multipart storage root (gitignored) ---
+    upload_dir: str = "var/uploads"
+
+    # --- Daily search budget (audit P1-8, app/core/budget.py) ---
+    # Aggregate spend bound on top of the per-IP rate limits and the P1-7
+    # concurrency caps: at most this many search_runs rows per day (UTC).
+    # 0 = unlimited. The AGRAPH_-prefixed names are the documented env vars
+    # (AliasChoices keeps the pydantic field name usable in code/tests too).
+    daily_search_budget: int = Field(
+        default=500,
+        validation_alias=AliasChoices("AGRAPH_DAILY_SEARCH_BUDGET", "daily_search_budget"),
+    )
+    # Per-user variant keyed on the nullable search_runs.user_id column.
+    daily_search_budget_per_user: int = Field(
+        default=0,  # 0 = unlimited
+        validation_alias=AliasChoices(
+            "AGRAPH_DAILY_SEARCH_BUDGET_PER_USER", "daily_search_budget_per_user"
+        ),
+    )
 
     @property
     def llm_endpoints(self) -> list[dict[str, str]]:

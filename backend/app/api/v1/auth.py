@@ -1,9 +1,14 @@
-"""Authentication endpoints: register, login, current user.
+"""Authentication endpoints: register, login, current user, password reset,
+email verification.
 
 Contract (API_CONTRACT / spec):
     POST /auth/register  {email, password, full_name?} -> 201 {token, user}
     POST /auth/login     {email, password}             -> 200 {token, user}
     GET  /auth/me        Bearer required               -> 200 {user}
+    POST /auth/forgot    {email}                       -> 202 {status:"accepted"}
+    POST /auth/reset     {token, password}             -> 200 {status:"reset"}
+    POST /auth/verify-request {email}                  -> 202 {status:"accepted"}
+    POST /auth/verify    {token}                       -> 200 {status:"verified"}
 
 Security notes (BACKEND_SPEC §Security):
 - Passwords stored as Argon2id hashes only (app/core/security.py).
@@ -11,10 +16,17 @@ Security notes (BACKEND_SPEC §Security):
   constant-work decoy verify for unknown accounts).
 - Tokens are HS256 JWTs minted by create_token; the middleware decodes them
   into ContextVars, so /auth/me just reads current_user_id().
+- /auth/forgot and /auth/verify-request NEVER reveal whether the email has an
+  account (always 202). Reset/verify links carry a raw random token whose
+  SHA-256 hash is the only thing stored (app/services/auth/tokens.py).
+- HANDOFF (security.py is owned by W1): invalidating still-valid JWTs after a
+  password change is a security.py concern and is NOT done here.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import UTC, datetime
 from functools import lru_cache
 
 from fastapi import APIRouter, Depends, status
@@ -33,9 +45,12 @@ from app.core.security import (
     set_request_user,
     verify_password,
 )
-from app.db.models import User, UserRole
+from app.db.models import AuthTokenPurpose, User, UserRole
 from app.db.repositories import auth as auth_repo
 from app.db.session import get_session
+from app.services.auth.tokens import find_valid_token, issue_token
+from app.services.mail import send_email
+from app.services.mail.templates import email_verify_email, password_reset_email
 from app.services.profile import get_or_create_profile
 
 router = APIRouter(tags=["auth"])
@@ -43,6 +58,8 @@ router = APIRouter(tags=["auth"])
 MIN_PASSWORD_LENGTH = 8
 INVALID_CREDENTIALS_MESSAGE = "Incorrect email or password"
 EMAIL_TAKEN_MESSAGE = "An account with this email already exists"
+INVALID_RESET_TOKEN_MESSAGE = "This reset link is invalid or has expired"
+INVALID_VERIFY_TOKEN_MESSAGE = "This verification link is invalid or has expired"
 
 
 class RegisterInput(BaseModel):
@@ -190,3 +207,160 @@ async def me(session: AsyncSession = Depends(get_session)) -> MeResponse:
         # Token minted for a since-deleted account.
         raise AppError(401, "UNAUTHENTICATED", "Authentication required")
     return MeResponse(user=_user_payload(user))
+
+
+# --- P2-14: password reset + email verification -------------------------------
+
+
+class ForgotInput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    email: str | None = None
+
+
+class ResetInput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    token: str | None = None
+    password: str | None = None
+
+
+class VerifyRequestInput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    email: str | None = None
+
+
+class VerifyInput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    token: str | None = None
+
+
+class StatusOut(BaseModel):
+    status: str
+
+
+def _frontend_link(path: str) -> str:
+    """Absolute frontend URL for an emailed one-time link."""
+    return f"{get_settings().frontend_url.rstrip('/')}{path}"
+
+
+async def _send_one_time_link(
+    session: AsyncSession,
+    user: User,
+    purpose: AuthTokenPurpose,
+    path: str,
+    template: Callable[[str, str], tuple[str, str, str]],
+) -> None:
+    """Issue + commit + email a single-use link. Never raises.
+
+    The token row must land even if delivery fails, so the commit happens
+    before the (send_email itself never raises either).
+    """
+    raw = await issue_token(session, user.id, purpose)
+    await auth_repo.commit(session)
+    link = _frontend_link(f"{path}?token={raw}")
+    name = user.full_name.strip() if user.full_name and user.full_name.strip() else "there"
+    subject, html, text = template(name, link)
+    await send_email(user.email, subject, html, text)
+
+
+@router.post(
+    "/auth/forgot",
+    response_model=StatusOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def forgot(
+    payload: ForgotInput, session: AsyncSession = Depends(get_session)
+) -> StatusOut:
+    """Request a password-reset link.
+
+    Always 202 {status:"accepted"} — the response never reveals whether the
+    email has an account (unknown addresses simply produce no email).
+    """
+    email = _validate_email(payload.email)
+    user = await auth_repo.get_user_by_email(session, email)
+    # Accounts without a password hash (e.g. seeded demo) get no link, but the
+    # response is identical so existence still does not leak.
+    if user is not None and user.password_hash is not None:
+        await _send_one_time_link(
+            session,
+            user,
+            AuthTokenPurpose.PASSWORD_RESET,
+            "/reset-password",
+            password_reset_email,
+        )
+        emit("auth.password_reset_requested", user_id=user.id, email=user.email)
+    return StatusOut(status="accepted")
+
+
+@router.post("/auth/reset", response_model=StatusOut)
+async def reset(
+    payload: ResetInput, session: AsyncSession = Depends(get_session)
+) -> StatusOut:
+    """Consume a reset token and set a new password.
+
+    Token is validated FIRST so an expired/unknown link always yields the
+    same 400 INVALID_TOKEN (no "password" in the message — the frontend uses
+    that to route between token-invalid and password-error UI). Password
+    problems surface as 400 VALIDATION_ERROR whose message does contain
+    "Password".
+    """
+    row = await find_valid_token(session, payload.token or "", AuthTokenPurpose.PASSWORD_RESET)
+    if row is None:
+        raise AppError(400, "INVALID_TOKEN", INVALID_RESET_TOKEN_MESSAGE)
+    password = _validate_password(payload.password)
+    user = await auth_repo.get_user(session, row.user_id)
+    if user is None:
+        raise AppError(400, "INVALID_TOKEN", INVALID_RESET_TOKEN_MESSAGE)
+    now = datetime.now(UTC)
+    user.password_hash = hash_password(password)
+    user.password_changed_at = now
+    row.used_at = now  # single-use
+    await auth_repo.commit(session)
+    emit("auth.password_reset", user_id=user.id, email=user.email)
+    return StatusOut(status="reset")
+
+
+@router.post(
+    "/auth/verify-request",
+    response_model=StatusOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def verify_request(
+    payload: VerifyRequestInput, session: AsyncSession = Depends(get_session)
+) -> StatusOut:
+    """Request an email-verification link. Always 202 {status:"accepted"}."""
+    email = _validate_email(payload.email)
+    user = await auth_repo.get_user_by_email(session, email)
+    if user is not None:
+        await _send_one_time_link(
+            session,
+            user,
+            AuthTokenPurpose.EMAIL_VERIFY,
+            "/verify-email",
+            email_verify_email,
+        )
+        emit("auth.email_verification_requested", user_id=user.id, email=user.email)
+    return StatusOut(status="accepted")
+
+
+@router.post("/auth/verify", response_model=StatusOut)
+async def verify(
+    payload: VerifyInput, session: AsyncSession = Depends(get_session)
+) -> StatusOut:
+    """Consume a verification token; stamps users.email_verified_at."""
+    row = await find_valid_token(session, payload.token or "", AuthTokenPurpose.EMAIL_VERIFY)
+    if row is None:
+        raise AppError(400, "INVALID_TOKEN", INVALID_VERIFY_TOKEN_MESSAGE)
+    user = await auth_repo.get_user(session, row.user_id)
+    if user is None:
+        raise AppError(400, "INVALID_TOKEN", INVALID_VERIFY_TOKEN_MESSAGE)
+    now = datetime.now(UTC)
+    if user.email_verified_at is None:
+        user.email_verified_at = now
+    row.used_at = now  # single-use
+    await auth_repo.commit(session)
+    emit("auth.email_verified", user_id=user.id, email=user.email)
+    return StatusOut(status="verified")

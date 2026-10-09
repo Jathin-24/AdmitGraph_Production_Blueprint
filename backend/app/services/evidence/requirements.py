@@ -14,17 +14,17 @@ import logging
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
     Evidence,
     EvidenceStatus,
-    Program,
     Requirement,
     RequirementStatus,
     RequirementVersion,
+    SourceAuthority,
 )
+from app.db.repositories import evidence as evidence_repo
 from app.services.evidence.llm_extract import KEY_OPERATOR, KEY_TO_REQUIREMENT_TYPE, KNOWN_CLAIM_KEYS
 
 logger = logging.getLogger(__name__)
@@ -37,6 +37,11 @@ logger = logging.getLogger(__name__)
 MANDATORY_CLAIM_KEYS = frozenset(
     {"ielts_overall_min", "academic_cgpa_min", "prerequisite_subjects", "application_deadline"}
 )
+
+# P2-25: a requirement supported ONLY by a forum thread or an unclassifiable
+# domain cannot be asserted as fact — sync flags it NEEDS_VERIFICATION (the
+# same flag staleness uses) so the UI asks for a fresh, trustworthy check.
+LOW_TRUST_AUTHORITIES = frozenset({SourceAuthority.FORUM_SOCIAL, SourceAuthority.UNKNOWN})
 
 
 def requirement_title(normalized_key: str) -> str:
@@ -63,21 +68,7 @@ def _change_reason(
 
 async def _close_open_version(session: AsyncSession, requirement_id: UUID, now: datetime) -> None:
     """End the currently open version so history has no overlapping windows."""
-    open_version = (
-        (
-            await session.execute(
-                select(RequirementVersion)
-                .where(
-                    RequirementVersion.requirement_id == requirement_id,
-                    RequirementVersion.valid_to.is_(None),
-                )
-                .order_by(RequirementVersion.valid_from.desc())
-                .limit(1)
-            )
-        )
-        .scalars()
-        .first()
-    )
+    open_version = await evidence_repo.open_requirement_version(session, requirement_id)
     if open_version is not None:
         open_version.valid_to = now
 
@@ -89,34 +80,27 @@ async def sync_requirements_from_evidence(
 
     For each (program, key): the freshest evidence carrying a value supports
     the requirement. When THAT evidence is past its freshness deadline (and is
-    not part of a conflict) the requirement is flagged NEEDS_VERIFICATION
-    instead of pretending the value is current. Any change to the value or the
-    status writes a RequirementVersion row capturing old/new plus the evidence
-    link; unchanged rows write nothing.
+    not part of a conflict), or comes from a low-trust source (forum/social or
+    unclassifiable domain, P2-25), the requirement is flagged
+    NEEDS_VERIFICATION instead of pretending the value is current. Any change
+    to the value or the status writes a RequirementVersion row capturing
+    old/new plus the evidence link; unchanged rows write nothing.
     """
     now = datetime.now(UTC)
-    rows = (
-        await session.execute(
-            select(Evidence).where(
-                Evidence.subject_type == subject_type,
-                Evidence.subject_id.is_not(None),
-                Evidence.normalized_claim.in_(KNOWN_CLAIM_KEYS),
-            )
-        )
-    ).scalars().all()
+    rows = await evidence_repo.known_claim_evidence(session, subject_type, KNOWN_CLAIM_KEYS)
 
     # Requirements have a FK to programs: skip evidence whose subject no longer
     # (or never) exists rather than crashing the caller with an FK violation.
     subject_ids = {r.subject_id for r in rows if r.subject_id is not None}
     known_program_ids: set[UUID] = set()
     if subject_ids:
-        known_program_ids = set(
-            (
-                await session.execute(
-                    select(Program.id).where(Program.id.in_(subject_ids))
-                )
-            ).scalars()
-        )
+        known_program_ids = await evidence_repo.existing_program_ids(session, subject_ids)
+
+    # Source authority of every candidate row (P2-25 low-trust flag), one query.
+    source_ids = {r.source_id for r in rows}
+    authority_by_source: dict[UUID, SourceAuthority] = {}
+    if source_ids:
+        authority_by_source = await evidence_repo.source_authorities(session, source_ids)
 
     # Group every claim per (program, key), freshest first (deterministic: the
     # DB's natural order is not a promise). Conflicting values stay separate
@@ -141,22 +125,20 @@ async def sync_requirements_from_evidence(
             continue  # no value -> nothing to assert (UNKNOWN stays valid)
         value = dict(supporting.extracted_value or {})
         conflicting = any(r.status == EvidenceStatus.CONFLICTING for r in group)
-        # Stale support that is NOT disputed: the value may have moved on, so
-        # the requirement needs a fresh look rather than a silent pass/fail.
-        stale_status = (
+        # Stale or low-trust support that is NOT disputed: the value may have
+        # moved on (or never came from a channel we can stand behind), so the
+        # requirement needs a fresh look rather than a silent pass/fail.
+        low_trust = (
+            authority_by_source.get(supporting.source_id, SourceAuthority.UNKNOWN)
+            in LOW_TRUST_AUTHORITIES
+        )
+        verify_status = (
             RequirementStatus.NEEDS_VERIFICATION
-            if (_is_stale(supporting, now) and not conflicting)
+            if (not conflicting and (_is_stale(supporting, now) or low_trust))
             else None
         )
 
-        existing = (
-            await session.execute(
-                select(Requirement).where(
-                    Requirement.program_id == program_id,
-                    Requirement.normalized_key == key,
-                )
-            )
-        ).scalar_one_or_none()
+        existing = await evidence_repo.requirement_for_key(session, program_id, key)
 
         if existing is None:
             session.add(
@@ -168,7 +150,7 @@ async def sync_requirements_from_evidence(
                     operator=KEY_OPERATOR.get(key, "eq"),
                     value=value,
                     mandatory=key in MANDATORY_CLAIM_KEYS,
-                    status=stale_status or RequirementStatus.UNKNOWN,
+                    status=verify_status or RequirementStatus.UNKNOWN,
                     last_verified_at=supporting.retrieved_at,
                 )
             )
@@ -177,7 +159,7 @@ async def sync_requirements_from_evidence(
 
         value_changed = dict(existing.value or {}) != value
         status_before = existing.status
-        status_after = stale_status if stale_status is not None else status_before
+        status_after = verify_status if verify_status is not None else status_before
         mandatory_wanted = key in MANDATORY_CLAIM_KEYS
         if value_changed:
             existing.value = value

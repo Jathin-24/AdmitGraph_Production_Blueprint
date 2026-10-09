@@ -2,40 +2,40 @@
 
 ## Structure
 backend/
+  alembic/                    # migrations (alembic upgrade head)
   app/
-    main.py
+    main.py                   # FastAPI app, middleware (request-id, auth,
+                              #   rate limit, body cap, security headers), /metrics
     api/
       v1/
-        profile.py
-        onboarding.py
-        research.py
-        programs.py
-        strategies.py
-        evidence.py
+        admin.py              # ADMIN-only usage + run logs
+        auth.py               # register/login/me + forgot/reset/verify
+        documents.py          # checklist + file upload/download/delete
+        evidence.py           # list/detail/conflicts/recheck/resolve (scoped)
+        health.py             # /health, /health/ready (503 when DB down)
         monitor.py
-        documents.py
+        notifications.py
+        onboarding.py
+        profile.py
+        programs.py           # catalog + filters + save/unsave
+        research.py           # plan/runs/demo/events/cancel (+ run caps)
+        strategies.py
     core/
-      config.py
-      security.py
-      logging.py
-      errors.py
+      config.py  errors.py  events.py  limits.py  logging.py
+      metrics.py  redis.py  runcontext.py  security.py  throttling.py
     db/
-      session.py
-      models/
+      base.py  models.py  session.py
       repositories/
-      migrations/
-    schemas/
+    schemas/                  # onboarding.py, profile.py, research.py
     services/
-      serpapi/
-      research/
-      evidence/
-      matching/
-      scoring/
-      risk/
-      strategy/
-      monitoring/
-    workers/
-    tests/
+      auth/  demo/  documents/  evidence/  export/  llm.py  mail/
+      matching/  monitoring/  notifications.py  onboarding.py  profile.py
+      research/  risk/  scoring/  serpapi/  strategy/
+    workers/                  # locks.py, recovery.py, scheduler.py (in-process)
+  scripts/                    # seed_demo, export_schema, export_openapi,
+                              # grant_demo_admin, capture_example, fix_fit_explanations
+  tests/                      # 580 tests (pytest); scratch DB `admitgraph_test`
+  var/                        # gitignored runtime state (file outbox, uploads)
 
 ## Layering
 Router -> service -> repository -> database.
@@ -119,18 +119,35 @@ For a subscription:
 8. update freshness
 
 ## Security
-- Argon2/bcrypt only if local auth is implemented.
-- Prefer managed OAuth if auth is needed.
-- CORS allowlist.
-- Rate limiting.
-- Request validation.
-- Maximum body size.
+Status in parentheses — what the code does today.
+- Argon2/bcrypt only if local auth is implemented. (Implemented: **Argon2id**
+  via `passlib`/`argon2`, HS256 JWT bearer tokens; no OAuth.)
+- Prefer managed OAuth if auth is needed. (Not taken — password auth.)
+- CORS allowlist. (Implemented.)
+- Rate limiting. (Implemented: per-IP/user fixed-window, 60/min default on the
+  expensive POSTs, dedicated 5/min per IP **and** per email for
+  `POST /auth/forgot` + `POST /auth/verify-request`, per-caller recheck
+  cooldown — in-process, so per worker.)
+- Request validation. (Pydantic schemas + typed query params.)
+- Maximum body size. (11 MB middleware cap → `413 PAYLOAD_TOO_LARGE`; uploads
+  additionally capped at 10 MB → `413 FILE_TOO_LARGE`.)
 - SSRF protection for any server-side URL fetching.
 - Never accept arbitrary URLs for backend fetching without allowlisting and validation.
-- Sanitize HTML if rendered.
+- Sanitize HTML if rendered. (Backend returns data only; no HTML rendering.)
 - Do not store unnecessary personal data.
 - Encrypt secrets using platform secret manager.
-- Do not log profile PII, tokens, or API keys.
+- Do not log profile PII, tokens, or API keys. (Enforced by
+  `tests/test_security.py::test_logs_contain_no_secrets`.)
+
+Also enforced (see `api/API_CONTRACT.md`): security headers on every response
+(nosniff, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
+`Content-Security-Policy: default-src 'self'`), `401 TOKEN_STALE` after a
+password change, 404-not-403 cross-user scoping, admin endpoints
+authenticated-ADMIN-only (anonymous included), structured logs that carry
+`request_id`/`run_id` but no secrets (asserted by
+`test_security.py::test_logs_contain_no_secrets`), and prompt-injection
+hardening on LLM inputs (`test_prompt_injection.py` — untrusted web text is
+neutralized, delimited and declared untrusted in the system message).
 
 ## Reliability
 - timeouts on all provider calls
@@ -142,6 +159,10 @@ For a subscription:
 - structured logs with request_id and run_id
 
 ## Tests
+Status: implemented — **580 tests, 91 % coverage of `backend/app`**; the
+plan-by-plan status map (including the remaining gap: no browser E2E) lives in
+`../tests/TEST_PLAN.md`.
+
 Unit:
 - scoring
 - requirement matching

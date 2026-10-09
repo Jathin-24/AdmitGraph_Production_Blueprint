@@ -121,8 +121,40 @@ class User(Base):
     role: Mapped[UserRole] = mapped_column(
         Enum(UserRole, name="user_role", create_type=False), server_default="STUDENT"
     )
+    # P2-14: when the password last changed (stamped by /auth/reset) and when
+    # the address was verified (stamped by /auth/verify). NULL = not yet.
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = _ts()
     updated_at: Mapped[datetime] = _ts()
+
+
+class AuthTokenPurpose(enum.StrEnum):
+    """What a single-use auth token may be spent on (P2-14)."""
+
+    PASSWORD_RESET = "PASSWORD_RESET"
+    EMAIL_VERIFY = "EMAIL_VERIFY"
+
+
+class AuthToken(Base):
+    """Single-use, hashed, expiring token for password reset / email verify.
+
+    Only the SHA-256 hash of the raw token is persisted (a database dump never
+    yields a usable link), every new request invalidates the caller's previous
+    unused tokens for the same purpose, and spending sets `used_at`.
+    """
+
+    __tablename__ = "auth_tokens"
+    __table_args__ = (
+        Index("ix_auth_tokens_user_purpose", "user_id", "purpose"),
+    )
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    purpose: Mapped[str] = mapped_column(Text)  # AuthTokenPurpose value
+    token_hash: Mapped[str] = mapped_column(Text, unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _ts()
 
 
 class Notification(Base):
@@ -726,4 +758,11 @@ class Document(Base):
     )
     expires_at: Mapped[date | None] = mapped_column(Date)
     notes: Mapped[str | None] = mapped_column(Text)
+    # P2-15 uploaded file (all three NULL until a file exists):
+    # file_path = stored path relative to the upload root (uuid-based name),
+    # file_name = the ORIGINAL filename kept as metadata for display/download,
+    # file_size = bytes as stored.
+    file_path: Mapped[str | None] = mapped_column(Text)
+    file_name: Mapped[str | None] = mapped_column(Text)
+    file_size: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = _ts()

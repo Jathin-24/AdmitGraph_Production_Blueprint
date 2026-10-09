@@ -1,18 +1,18 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
-import { AuthNudge } from "../components/auth-nudge";
 import { Term, type GlossaryKey } from "../components/glossary";
-import { LoadingNote } from "../components/ui";
+import { ErrorNote, LoadingNote } from "../components/ui";
 import {
   getOnboardingProgress,
+  getOnboardingSchema,
+  getProfile,
   saveOnboardingAnswers,
   type OnboardingProgress,
 } from "../lib/api";
-
-const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
 /** Onboarding keys that mirror profile fields — prefilled from GET /me/profile. */
 const PREFILL_KEYS = [
@@ -267,8 +267,22 @@ function friendlySaveError(error: unknown): string {
     : message;
 }
 
+/** Schema-load failures render as a Retry screen, so translate the three
+ *  ways it commonly fails into words a student can act on. */
+function friendlySchemaError(error: unknown): string {
+  const message = error instanceof Error ? error.message : "unknown error";
+  if (message === "Failed to fetch" || message.toLowerCase().includes("network")) {
+    return "cannot reach the server — check that the backend is running, then try again";
+  }
+  if (message.includes("did not match the expected shape")) {
+    return "the server sent an unexpected response format — it may be mid-deploy, try again in a moment";
+  }
+  return message;
+}
+
 export default function OnboardingPage() {
   const [steps, setSteps] = useState<Step[]>([]);
+  const [schemaError, setSchemaError] = useState<string | null>(null);
   const [index, setIndex] = useState(0);
   const [progress, setProgress] = useState<OnboardingProgress | null>(null);
   const [saved, setSaved] = useState(false);
@@ -321,30 +335,45 @@ export default function OnboardingPage() {
     };
   }, []);
 
+  // Guided setup schema (deep links: /onboarding?step=budget). Routed
+  // through apiFetch so the request carries the signed-in user's token
+  // (P0-3: a bare fetch() here read the anonymous demo profile and the
+  // autosave then wrote those values into the real account). Failures land
+  // in schemaError so the wizard shows a real error + Retry instead of the
+  // "Loading your guided setup…" spinner forever.
+  const loadSchema = useCallback(async () => {
+    setSchemaError(null);
+    setSteps([]);
+    try {
+      const data = await getOnboardingSchema();
+      const loaded = Array.isArray(data.steps) ? data.steps : [];
+      if (loaded.length === 0) {
+        setSchemaError("the server returned an empty setup schema");
+        return;
+      }
+      setSteps(loaded);
+      const wanted = new URLSearchParams(window.location.search).get("step");
+      if (wanted) {
+        const target = loaded.findIndex((s) => s.id === wanted);
+        if (target >= 0) setIndex(target);
+      }
+    } catch (e) {
+      setSchemaError(friendlySchemaError(e));
+    }
+  }, []);
+
   useEffect(() => {
-    // Guided setup schema (deep links: /onboarding?step=budget).
-    fetch(`${API}/onboarding/schema`)
-      .then((r) => r.json())
-      .then((d: { steps?: Step[] }) => {
-        const loaded = Array.isArray(d.steps) ? d.steps : [];
-        setSteps(loaded);
-        const wanted = new URLSearchParams(window.location.search).get("step");
-        if (wanted) {
-          const target = loaded.findIndex((s) => s.id === wanted);
-          if (target >= 0) setIndex(target);
-        }
-      })
-      .catch(() => setSteps([]));
+    void loadSchema();
 
     // Prefill from the saved profile so returning users never retype
-    // answers they already gave.
-    fetch(`${API}/me/profile`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((p: Record<string, unknown> | null) => {
-        if (!p) return;
+    // answers they already gave. Also apiFetch-authenticated (P0-3): a
+    // signed-in user is prefilled from THEIR profile, never the demo one.
+    getProfile()
+      .then((p) => {
+        const rec: Record<string, unknown> = { ...p };
         const merged = { ...answersRef.current };
         for (const key of PREFILL_KEYS) {
-          const v = p[key];
+          const v = rec[key];
           const empty = v === null || v === undefined || v === "";
           if (!empty && !merged[key]) merged[key] = String(v);
         }
@@ -367,7 +396,7 @@ export default function OnboardingPage() {
         /* progress is a nicety; the wizard works without it */
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [loadSchema]);
 
   function refreshProgress() {
     getOnboardingProgress()
@@ -497,6 +526,33 @@ export default function OnboardingPage() {
   async function finish() {
     if (!(await validateCurrentStep())) return;
     if (await save(true)) router.push("/research");
+  }
+
+  if (schemaError) {
+    // Real error state (P2-19): the schema failed to load — say so and
+    // offer a retry instead of spinning on "Loading your guided setup…".
+    return (
+      <main className="mx-auto max-w-xl px-5 py-16">
+        <h1 className="display text-xl font-medium text-ink">
+          We couldn&apos;t load your guided setup
+        </h1>
+        <p className="mt-2 text-sm text-ink-soft">
+          Nothing was lost — your answers stay as they are. This is usually the backend
+          restarting or an unreachable API address.
+        </p>
+        <div className="mt-4">
+          <ErrorNote message={`Could not load the setup: ${schemaError}.`} />
+        </div>
+        <div className="mt-5 flex flex-wrap gap-3">
+          <button type="button" className="btn-primary" onClick={() => void loadSchema()}>
+            Try again
+          </button>
+          <Link href="/" className="btn-secondary">
+            Back home
+          </Link>
+        </div>
+      </main>
+    );
   }
 
   if (steps.length === 0) {
@@ -767,10 +823,9 @@ export default function OnboardingPage() {
 
   return (
     <main className="mx-auto flex max-w-xl flex-col gap-6 px-5 py-10">
-      {/* Guests: their answers live on the demo profile, not an account */}
-      <AuthNudge next="/onboarding">
-        {"You're filling this in as a guest — create a free account so your answers stay yours."}
-      </AuthNudge>
+      {/* Guests see the site-wide demo-profile notice here (DemoModeBanner in
+          the root layout) — one dismissible banner instead of a second
+          inline nudge. */}
 
       {/* Progress: server-side completion + where you are in the wizard */}
       <div>

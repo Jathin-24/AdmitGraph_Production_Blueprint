@@ -2,30 +2,28 @@
 
 Inputs here are REAL data (requirements, evidence, conflicts, intakes,
 documents, tuition, budget) — nothing in this module hard-codes a health score
-or a risk. Formulas are documented next to their helpers.
+or a risk. Formulas are documented next to their helpers. Every SQL statement
+these steps run lives in ``app.db.repositories.strategy_pipeline`` (plus the
+shared router repositories), and the pure scoring/risk derivations live in
+``scoring`` / ``risk_assessment`` (re-exported here so existing imports keep
+working); this module keeps the orchestration, business rules and the exact
+commit points.
 """
 
 from __future__ import annotations
 
 import uuid
 from datetime import UTC, date, datetime
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
     ApplicationPlan,
-    ConfidenceLevel,
-    Document,
-    EducationRecord,
-    EducationSubject,
     EligibilityAssessment,
     EligibilityEvidence,
     Evidence,
-    EvidenceConflict,
-    EvidenceConflictMember,
     EvidenceStatus,
     FitAssessment,
     FitDimensionEvidence,
@@ -43,9 +41,11 @@ from app.db.models import (
     TaskStatus,
     TestScore,
 )
+from app.db.repositories import strategy_pipeline as pipeline
+from app.db.repositories.strategies import get_program_evidence
 from app.services.matching.evaluator import ProfileFacts, evaluate
 from app.services.matching.normalize import normalize_percentage_to_cgpa
-from app.services.risk.engine import EligibilityEntry, RiskAssessment, RiskContext, assess
+from app.services.risk.engine import EligibilityEntry, RiskContext, assess
 from app.services.scoring.scorer import (
     DEFAULT_WEIGHTS,
     SCORING_VERSION,
@@ -54,6 +54,33 @@ from app.services.scoring.scorer import (
 )
 from app.services.strategy.health import plan_health_score
 from app.services.strategy.portfolio import Candidate, build_portfolio
+from app.services.strategy.risk_assessment import (
+    evidence_for_risk as _evidence_for_risk,
+)
+from app.services.strategy.risk_assessment import (
+    risk_confidence as _risk_confidence,
+)
+from app.services.strategy.scoring import (
+    eligibility_confidence as _eligibility_confidence,
+)
+from app.services.strategy.scoring import (
+    estimated_cost as _estimated_cost,
+)
+from app.services.strategy.scoring import (
+    evaluation_value as _evaluation_value,
+)
+from app.services.strategy.scoring import (
+    evidence_dimension_statuses as evidence_dimension_statuses,
+)
+from app.services.strategy.scoring import (
+    evidence_links_by_dimension as evidence_links_by_dimension,
+)
+from app.services.strategy.scoring import (
+    facts_payload as _facts_payload,
+)
+from app.services.strategy.scoring import (
+    top_reasons as top_reasons,
+)
 
 STRATEGY_VERSION = "v1"
 
@@ -78,27 +105,6 @@ _DOCUMENT_TYPE_ALIASES = {
 # ...) is not an English result and must never stand in for one.
 ENGLISH_TEST_TYPES = ("english_overall", "IELTS", "IELTS_ACADEMIC", "TOEFL", "PTE", "DET")
 
-# Tuition cost bands, per currency (MASTER_SPEC card "estimated cost band").
-# No FX conversion is invented: below the first threshold is LOW, below the
-# second MEDIUM, otherwise HIGH. A currency outside this table (or a missing
-# amount) has an UNKNOWN band -> None, never a guessed one.
-TUITION_BAND_THRESHOLDS: dict[str, tuple[Decimal, Decimal]] = {
-    "EUR": (Decimal("15000"), Decimal("35000")),
-    "GBP": (Decimal("15000"), Decimal("35000")),
-    "USD": (Decimal("15000"), Decimal("35000")),
-    "AUD": (Decimal("15000"), Decimal("35000")),
-    "CAD": (Decimal("15000"), Decimal("35000")),
-    "CHF": (Decimal("15000"), Decimal("35000")),
-    "INR": (Decimal("500000"), Decimal("1500000")),
-}
-
-_SEVERITY_RANK: dict[str, int] = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
-
-# Dimensions whose status is derived from stored evidence (shared with the
-# counterfactual simulator so a recompute mirrors the stored strategy).
-EVIDENCE_DIMENSIONS = ("career", "timing", "evidence_confidence")
-_TIMING_CLAIM_TYPES = ("policy", "deadline")
-
 
 def _normalize_doc_type(raw: str) -> str:
     key = raw.strip().lower().replace(" ", "_").replace("-", "_")
@@ -111,9 +117,7 @@ async def missing_core_documents(session: AsyncSession, profile_id: uuid.UUID) -
     Returns them in checklist order; a type the student never tracked counts as
     missing (nothing tracked is not the same as ready).
     """
-    rows = (
-        await session.execute(select(Document).where(Document.profile_id == profile_id))
-    ).scalars().all()
+    rows = await pipeline.list_profile_documents(session, profile_id)
     by_type: dict[str, TaskStatus] = {}
     for row in rows:
         by_type[_normalize_doc_type(row.document_type)] = row.status
@@ -132,38 +136,9 @@ async def _scope_program_ids(session: AsyncSession, profile_id: uuid.UUID) -> se
     Requirements from unrelated programs (other students' research, fixture
     rows) must never raise risks against this profile.
     """
-    fit_ids = (
-        await session.execute(
-            select(FitAssessment.program_id).where(FitAssessment.profile_id == profile_id)
-        )
-    ).scalars()
-    plan_ids = (
-        await session.execute(
-            select(ApplicationPlan.program_id).where(ApplicationPlan.profile_id == profile_id)
-        )
-    ).scalars()
-    return set(fit_ids) | set(plan_ids)
-
-
-async def _researched_programs(session: AsyncSession) -> list[Program]:
-    """Programs the run actually researched: those with extracted requirements.
-
-    Fit and eligibility can only be honestly computed where requirements exist.
-    A program with no extracted facts must not outrank one whose status is
-    known — "no data" is uncertainty, not a better position.
-    """
-    return list(
-        (
-            await session.execute(
-                select(Program)
-                .join(Requirement, Requirement.program_id == Program.id)
-                .distinct()
-                .order_by(Program.canonical_name)
-            )
-        )
-        .scalars()
-        .all()
-    )
+    fit_ids = await pipeline.fit_program_ids(session, profile_id)
+    plan_ids = await pipeline.plan_program_ids(session, profile_id)
+    return fit_ids | plan_ids
 
 
 async def _future_deadline(
@@ -172,17 +147,7 @@ async def _future_deadline(
     """Earliest FUTURE application deadline across the given programs."""
     if not program_ids:
         return None
-    today = date.today()
-    rows = (
-        await session.execute(
-            select(Intake.application_deadline).where(
-                Intake.program_id.in_(program_ids),
-                Intake.application_deadline.is_not(None),
-                Intake.application_deadline >= today,
-            )
-        )
-    ).scalars().all()
-    deadlines = [d for d in rows if d is not None]
+    deadlines = await pipeline.future_intake_deadlines(session, program_ids, date.today())
     return min(deadlines) if deadlines else None
 
 
@@ -197,15 +162,7 @@ async def _nearest_deadline_including_past(
     """
     if not program_ids:
         return None
-    rows = (
-        await session.execute(
-            select(Intake.application_deadline).where(
-                Intake.program_id.in_(program_ids),
-                Intake.application_deadline.is_not(None),
-            )
-        )
-    ).scalars().all()
-    deadlines = [d for d in rows if d is not None]
+    deadlines = await pipeline.all_intake_deadlines(session, program_ids)
     if not deadlines:
         return None
     today = date.today()
@@ -224,19 +181,11 @@ async def programs_with_passed_deadlines(
     """
     if not program_ids:
         return set()
-    rows = (
-        await session.execute(
-            select(Intake.program_id, Intake.application_deadline).where(
-                Intake.program_id.in_(program_ids),
-                Intake.application_deadline.is_not(None),
-            )
-        )
-    ).all()
+    rows = await pipeline.program_deadline_rows(session, program_ids)
     today = date.today()
     by_program: dict[uuid.UUID, list[date]] = {}
     for program_id, deadline in rows:
-        if deadline is not None:
-            by_program.setdefault(program_id, []).append(deadline)
+        by_program.setdefault(program_id, []).append(deadline)
     return {pid for pid, deadlines in by_program.items() if all(d < today for d in deadlines)}
 
 
@@ -258,23 +207,9 @@ async def plan_health_inputs(
     stale = 0
     if program_ids:
         blockers = len(
-            (
-                await session.execute(
-                    select(Requirement.id).where(
-                        Requirement.program_id.in_(program_ids),
-                        Requirement.mandatory.is_(True),
-                        Requirement.status == RequirementStatus.NOT_SATISFIED,
-                    )
-                )
-            ).all()
+            await pipeline.unsatisfied_mandatory_requirement_ids(session, program_ids)
         )
-        evidence_rows = (
-            await session.execute(
-                select(Evidence).where(
-                    Evidence.subject_type == "program", Evidence.subject_id.in_(program_ids)
-                )
-            )
-        ).scalars().all()
+        evidence_rows = await get_program_evidence(session, program_ids)
         conflicts = sum(1 for e in evidence_rows if e.status == EvidenceStatus.CONFLICTING)
         stale = sum(
             1
@@ -312,80 +247,27 @@ async def _financial_feasible(
     budget = profile.tuition_budget_amount or profile.total_budget_amount
     if budget is None or not program_ids:
         return True
-    tuition_rows = (
-        await session.execute(
-            select(Program.tuition_amount).where(
-                Program.id.in_(program_ids),
-                Program.tuition_amount.is_not(None),
-                Program.tuition_currency == profile.budget_currency,
-            )
-        )
-    ).scalars().all()
+    tuition_rows = await pipeline.portfolio_tuition_amounts(
+        session, program_ids, profile.budget_currency
+    )
     if not tuition_rows:
         return True  # UNKNOWN: no comparable tuition figure
     amounts = [a for a in tuition_rows if a is not None]
     return all(amount <= budget for amount in amounts)
 
 
-def _evaluation_value(req: Requirement) -> dict[str, Any]:
-    """Requirement value handed to the evaluator.
-
-    An application window {start, end} is evaluated on its END date — copied
-    into a fresh dict, never written back, so the stored JSONB keeps exactly
-    what was extracted.
-    """
-    value = req.value or {}
-    if req.normalized_key.strip().lower() == "application_deadline" and "date" not in value:
-        if value.get("end"):
-            return {**value, "date": value["end"]}
-    return dict(value)
-
-
 async def _conflicting_claim_keys(
     session: AsyncSession, program_ids: set[uuid.UUID]
 ) -> dict[uuid.UUID, set[str]]:
     """Program -> normalized keys whose evidence is CONFLICTING."""
-    if not program_ids:
-        return {}
-    rows = (
-        await session.execute(
-            select(Evidence.normalized_claim, Evidence.subject_id).where(
-                Evidence.subject_type == "program",
-                Evidence.subject_id.in_(program_ids),
-                Evidence.status == EvidenceStatus.CONFLICTING,
-                Evidence.normalized_claim.is_not(None),
-            )
-        )
-    ).all()
-    out: dict[uuid.UUID, set[str]] = {}
-    for key, subject_id in rows:
-        if subject_id is None or key is None:
-            continue
-        out.setdefault(subject_id, set()).add(str(key))
-    return out
+    return await pipeline.conflicting_claim_keys(session, program_ids)
 
 
 async def _evidence_keys_by_program(
     session: AsyncSession, program_ids: set[uuid.UUID]
 ) -> dict[tuple[uuid.UUID, str], list[uuid.UUID]]:
     """(program, claim key) -> evidence ids, for eligibility evidence links."""
-    if not program_ids:
-        return {}
-    rows = (
-        await session.execute(
-            select(Evidence.subject_id, Evidence.normalized_claim, Evidence.id).where(
-                Evidence.subject_type == "program",
-                Evidence.subject_id.in_(program_ids),
-                Evidence.normalized_claim.is_not(None),
-            )
-        )
-    ).all()
-    out: dict[tuple[uuid.UUID, str], list[uuid.UUID]] = {}
-    for subject_id, key, evidence_id in rows:
-        if subject_id is None or key is None:
-            continue
-        out.setdefault((subject_id, str(key)), []).append(evidence_id)
-    return out
+    return await pipeline.evidence_keys_by_program(session, program_ids)
 
 
 async def _latest_fits_by_program(
@@ -393,64 +275,11 @@ async def _latest_fits_by_program(
 ) -> dict[uuid.UUID, FitAssessment]:
     """Newest fit per program for this profile (created_at is server-set, so a
     tie falls back to insertion order)."""
-    rows = (
-        await session.execute(
-            select(FitAssessment)
-            .where(FitAssessment.profile_id == profile_id)
-            .order_by(FitAssessment.created_at.desc())
-        )
-    ).scalars().all()
-    out: dict[uuid.UUID, FitAssessment] = {}
-    for fit in rows:
-        out.setdefault(fit.program_id, fit)
-    return out
-
-
-def _facts_payload(facts: ProfileFacts) -> dict[str, Any]:
-    """The profile facts an evaluation ran against, JSONB-safe.
-
-    Decimals/dates become strings so the row stores exactly what was compared,
-    ready for a later recalculation.
-    """
-
-    def _num(value: Decimal | None) -> str | None:
-        return str(value) if value is not None else None
-
-    return {
-        "cgpa": _num(facts.cgpa),
-        "cgpa_scale": _num(facts.cgpa_scale),
-        "percentage": _num(facts.percentage),
-        "ielts_overall": _num(facts.ielts_overall),
-        "english_test_type": facts.english_test_type,
-        "language_score": _num(facts.language_score),
-        "language_expiry_date": (
-            facts.language_expiry_date.isoformat() if facts.language_expiry_date else None
-        ),
-        "matched_credits": _num(facts.matched_credits),
-        "backlogs": facts.backlogs,
-        "total_budget_amount": _num(facts.total_budget_amount),
-        "budget_currency": facts.budget_currency,
-        "graduation_year": facts.graduation_year,
-        "subjects": sorted(facts.subjects),
-    }
-
-
-def _eligibility_confidence(status: RequirementStatus, has_evidence: bool) -> ConfidenceLevel:
-    """Confidence of one eligibility row (deterministic, documented):
-    LOW — sources disagree (CONFLICTING) or there is nothing to compare (UNKNOWN);
-    MEDIUM — a value exists but is unconfirmed (NEEDS_VERIFICATION), or the
-    result derives only from profile facts with no stored evidence behind it;
-    HIGH — a definite evaluation backed by stored evidence rows.
-    """
-    if status in (RequirementStatus.CONFLICTING, RequirementStatus.UNKNOWN):
-        return ConfidenceLevel.LOW
-    if status is RequirementStatus.NEEDS_VERIFICATION:
-        return ConfidenceLevel.MEDIUM
-    return ConfidenceLevel.HIGH if has_evidence else ConfidenceLevel.MEDIUM
+    return await pipeline.latest_fits_by_program(session, profile_id)
 
 
 async def step_evaluate_requirements(session: AsyncSession, profile_id: uuid.UUID) -> dict[str, Any]:
-    programs = await _researched_programs(session)
+    programs = await pipeline.researched_programs(session)
     program_ids = {p.id for p in programs}
     conflicting_keys = await _conflicting_claim_keys(session, program_ids)
     evidence_keys = await _evidence_keys_by_program(session, program_ids)
@@ -461,25 +290,13 @@ async def step_evaluate_requirements(session: AsyncSession, profile_id: uuid.UUI
     fit_ids = [f.id for f in fits.values()]
     existing: dict[tuple[uuid.UUID, uuid.UUID], EligibilityAssessment] = {}
     if fit_ids:
-        rows = (
-            await session.execute(
-                select(EligibilityAssessment).where(
-                    EligibilityAssessment.fit_assessment_id.in_(fit_ids)
-                )
-            )
-        ).scalars().all()
+        rows = await pipeline.eligibility_assessments_by_fit_ids(session, fit_ids)
         existing = {(row.fit_assessment_id, row.requirement_id): row for row in rows}
     linked: set[tuple[uuid.UUID, uuid.UUID]] = set()
     if existing:
-        link_rows = (
-            await session.execute(
-                select(EligibilityEvidence).where(
-                    EligibilityEvidence.eligibility_assessment_id.in_(
-                        [row.id for row in existing.values()]
-                    )
-                )
-            )
-        ).scalars().all()
+        link_rows = await pipeline.eligibility_evidence_links(
+            session, [row.id for row in existing.values()]
+        )
         linked = {(row.eligibility_assessment_id, row.evidence_id) for row in link_rows}
 
     evaluated = 0
@@ -488,9 +305,7 @@ async def step_evaluate_requirements(session: AsyncSession, profile_id: uuid.UUI
     skipped = 0
     evidence_links = 0
     for program in programs:
-        reqs = (
-            await session.execute(select(Requirement).where(Requirement.program_id == program.id))
-        ).scalars().all()
+        reqs = await pipeline.program_requirements(session, program.id)
         fit = fits.get(program.id)
         for req in reqs:
             status, reason = evaluate(
@@ -558,78 +373,14 @@ async def step_evaluate_requirements(session: AsyncSession, profile_id: uuid.UUI
     }
 
 
-def _evidence_status(
-    rows: list[Evidence], *, confidence_rule: bool, now: datetime
-) -> RequirementStatus:
-    """Status one dimension derives from its evidence rows (documented rules):
-    no rows -> UNKNOWN; any CONFLICTING row -> CONFLICTING; with the
-    confidence rule, SATISFIED only when every row is CURRENT and still inside
-    its freshness window, else NEEDS_VERIFICATION; without it, rows present and
-    clean -> NEEDS_VERIFICATION (a signal we hold, and should re-check).
-    """
-    if not rows:
-        return RequirementStatus.UNKNOWN
-    if any(row.status == EvidenceStatus.CONFLICTING for row in rows):
-        return RequirementStatus.CONFLICTING
-    if confidence_rule:
-        all_current_and_fresh = all(
-            row.status == EvidenceStatus.CURRENT
-            and (row.freshness_deadline is None or row.freshness_deadline >= now)
-            for row in rows
-        )
-        return (
-            RequirementStatus.SATISFIED if all_current_and_fresh else RequirementStatus.NEEDS_VERIFICATION
-        )
-    return RequirementStatus.NEEDS_VERIFICATION
-
-
-def evidence_dimension_statuses(
-    rows: list[Evidence], *, now: datetime | None = None
-) -> dict[str, RequirementStatus]:
-    """Career / timing / evidence-confidence statuses for one program.
-
-    Derived ONLY from stored evidence rows (claim_type "career" feeds career,
-    "policy"/"deadline" feed timing, everything feeds evidence confidence) —
-    shared by the pipeline and the simulator so a recompute mirrors the stored
-    strategy. Missing evidence stays UNKNOWN: absence of data is not a verdict.
-    """
-    moment = now or datetime.now(UTC)
-    career = [row for row in rows if row.claim_type == "career"]
-    timing = [row for row in rows if row.claim_type in _TIMING_CLAIM_TYPES]
-    return {
-        "career": _evidence_status(career, confidence_rule=False, now=moment),
-        "timing": _evidence_status(timing, confidence_rule=False, now=moment),
-        "evidence_confidence": _evidence_status(rows, confidence_rule=True, now=moment),
-    }
-
-
-def evidence_links_by_dimension(rows: list[Evidence]) -> dict[str, list[uuid.UUID]]:
-    """fit_dimension_evidence rows for one program: which evidence backs which
-    dimension (an empty dimension gets no row rather than a fabricated link)."""
-    links: dict[str, set[uuid.UUID]] = {dim: set() for dim in EVIDENCE_DIMENSIONS}
-    for row in rows:
-        links["evidence_confidence"].add(row.id)
-        if row.claim_type == "career":
-            links["career"].add(row.id)
-        elif row.claim_type in _TIMING_CLAIM_TYPES:
-            links["timing"].add(row.id)
-    return {dim: sorted(ids) for dim, ids in links.items() if ids}
-
-
 async def step_score_fit(
     session: AsyncSession, profile_id: uuid.UUID, research_plan_id: uuid.UUID | None
 ) -> dict[str, Any]:
-    programs = await _researched_programs(session)
+    programs = await pipeline.researched_programs(session)
     program_ids = {p.id for p in programs}
     evidence_by_program: dict[uuid.UUID, list[Evidence]] = {}
     if program_ids:
-        rows = (
-            await session.execute(
-                select(Evidence).where(
-                    Evidence.subject_type == "program", Evidence.subject_id.in_(program_ids)
-                )
-            )
-        ).scalars().all()
+        rows = await get_program_evidence(session, program_ids)
         for row in rows:
             if row.subject_id is not None:
                 evidence_by_program.setdefault(row.subject_id, []).append(row)
@@ -637,9 +388,7 @@ async def step_score_fit(
     created = 0
     linked = 0
     for program in programs:
-        reqs = (
-            await session.execute(select(Requirement).where(Requirement.program_id == program.id))
-        ).scalars().all()
+        reqs = await pipeline.program_requirements(session, program.id)
         evidence_rows = evidence_by_program.get(program.id, [])
         derived = evidence_dimension_statuses(evidence_rows)
         dims: list[DimensionInput] = [
@@ -735,21 +484,7 @@ async def _latest_english_test(session: AsyncSession, profile_id: uuid.UUID) -> 
     Test rows of any other kind (GRE, GMAT, ...) never stand in for an English
     result, and a score without an expiry date keeps expiry UNKNOWN.
     """
-    return (
-        (
-            await session.execute(
-                select(TestScore)
-                .where(
-                    TestScore.profile_id == profile_id,
-                    TestScore.test_type.in_(ENGLISH_TEST_TYPES),
-                )
-                .order_by(TestScore.test_date.desc().nullslast(), TestScore.created_at.desc())
-                .limit(1)
-            )
-        )
-        .scalars()
-        .first()
-    )
+    return await pipeline.latest_english_test(session, profile_id, ENGLISH_TEST_TYPES)
 
 
 async def _education_facts(session: AsyncSession, profile_id: uuid.UUID) -> tuple[set[str], Decimal | None]:
@@ -758,17 +493,7 @@ async def _education_facts(session: AsyncSession, profile_id: uuid.UUID) -> tupl
     The credit sum is the only credit history the profile carries — None when
     no subject records credits (never a guessed total).
     """
-    rows = (
-        await session.execute(
-            select(
-                EducationSubject.subject_name,
-                EducationSubject.normalized_subject,
-                EducationSubject.credits,
-            )
-            .join(EducationRecord, EducationSubject.education_record_id == EducationRecord.id)
-            .where(EducationRecord.profile_id == profile_id)
-        )
-    ).all()
+    rows = await pipeline.education_subject_rows(session, profile_id)
     subjects: set[str] = set()
     total = Decimal(0)
     saw_credits = False
@@ -815,86 +540,13 @@ async def _profile_facts(session: AsyncSession, profile_id: uuid.UUID) -> Profil
     return ProfileFacts(**values)
 
 
-def _risk_confidence(risk: RiskAssessment) -> ConfidenceLevel:
-    """How sure we are the risk is real (MASTER_SPEC §8 "confidence").
-
-    HIGH — the risk reads a concrete stored fact: a requirement evaluated as
-    NOT_SATISFIED/CONFLICTING, a deadline date already in the past, an expired
-    test date, core document rows that are not DONE, or conflicting/stale
-    evidence rows.
-    MEDIUM — derived comparisons (budget vs tuition) and absence-of-data risks
-    (unknown requirement, no career evidence): real, but about what we do not
-    know rather than what we observed.
-    """
-    if risk.risk_type in ("SOURCE_CONFLICT", "INFORMATION_FRESHNESS", "DOCUMENT"):
-        return ConfidenceLevel.HIGH
-    if risk.risk_type == "DEADLINE" and risk.title == "Deadline has passed":
-        return ConfidenceLevel.HIGH
-    if risk.risk_type == "TEST" and risk.title == "Language test expired":
-        return ConfidenceLevel.HIGH
-    if risk.title.startswith(
-        ("Requirement not met:", "Optional requirement not met:", "Conflicting information for")
-    ):
-        return ConfidenceLevel.HIGH
-    return ConfidenceLevel.MEDIUM
-
-
-def _evidence_for_risk(
-    risk: RiskAssessment,
-    *,
-    key_evidence_ids: dict[str, list[uuid.UUID]],
-    conflict_evidence_ids: list[uuid.UUID],
-    stale_evidence_ids: list[uuid.UUID],
-    deadline_evidence_ids: list[uuid.UUID],
-    tuition_evidence_ids: list[uuid.UUID],
-    language_test_evidence_ids: list[uuid.UUID],
-) -> list[uuid.UUID]:
-    """Map a deterministic risk back to the evidence it derives from (bounded)."""
-    ids: set[uuid.UUID] = set()
-    title = risk.title
-    if ": " in title and title.split(": ", 1)[0] in (
-        "Requirement not met",
-        "Optional requirement not met",
-        "Requirement unknown",
-        "Requirement unverified",
-        "Conflicting information for",
-    ):
-        key = title.split(": ", 1)[1]
-        ids.update(key_evidence_ids.get(key, []))
-    if risk.risk_type == "SOURCE_CONFLICT":
-        ids.update(conflict_evidence_ids)
-    if title == "Stale evidence":
-        ids.update(stale_evidence_ids)
-    if risk.risk_type == "DEADLINE":
-        ids.update(deadline_evidence_ids)
-    if risk.risk_type == "FINANCIAL" or title.startswith("Budget below"):
-        ids.update(tuition_evidence_ids)
-    if risk.risk_type == "TEST":
-        ids.update(language_test_evidence_ids)
-    return sorted(ids)[:10]
-
-
 async def _unresolved_conflicts(
     session: AsyncSession, program_ids: set[uuid.UUID]
 ) -> tuple[list[str], list[uuid.UUID]]:
     """(human-readable descriptions, member evidence ids) for UNRESOLVED conflicts."""
     if not program_ids:
         return [], []
-    rows = (
-        await session.execute(
-            select(EvidenceConflict, EvidenceConflictMember.evidence_id)
-            .join(
-                EvidenceConflictMember,
-                EvidenceConflictMember.conflict_id == EvidenceConflict.id,
-            )
-            .join(Evidence, Evidence.id == EvidenceConflictMember.evidence_id)
-            .where(
-                EvidenceConflict.resolution_status == "UNRESOLVED",
-                Evidence.subject_type == "program",
-                Evidence.subject_id.in_(program_ids),
-            )
-        )
-    ).all()
+    rows = await pipeline.unresolved_conflict_rows(session, program_ids)
     descriptions: list[str] = []
     evidence_ids: list[uuid.UUID] = []
     seen: set[str] = set()
@@ -906,74 +558,10 @@ async def _unresolved_conflicts(
     return descriptions, sorted(set(evidence_ids))
 
 
-async def _stale_evidence_ids(
-    session: AsyncSession, program_ids: set[uuid.UUID], now: datetime
-) -> list[uuid.UUID]:
-    if not program_ids:
-        return []
-    rows = (
-        await session.execute(
-            select(Evidence.id).where(
-                Evidence.subject_type == "program",
-                Evidence.subject_id.in_(program_ids),
-                (Evidence.status == EvidenceStatus.STALE)
-                | ((Evidence.freshness_deadline.is_not(None)) & (Evidence.freshness_deadline < now)),
-            )
-        )
-    ).all()
-    return [r[0] for r in rows]
-
-
-async def _claim_evidence_ids(
-    session: AsyncSession, program_ids: set[uuid.UUID], keys: set[str]
-) -> list[uuid.UUID]:
-    if not program_ids:
-        return []
-    rows = (
-        await session.execute(
-            select(Evidence.id).where(
-                Evidence.subject_type == "program",
-                Evidence.subject_id.in_(program_ids),
-                Evidence.normalized_claim.in_(keys),
-            )
-        )
-    ).all()
-    return [r[0] for r in rows]
-
-
-async def _evidence_ids_by_key(
-    session: AsyncSession, program_ids: set[uuid.UUID]
-) -> dict[str, list[uuid.UUID]]:
-    if not program_ids:
-        return {}
-    rows = (
-        await session.execute(
-            select(Evidence.normalized_claim, Evidence.id).where(
-                Evidence.subject_type == "program",
-                Evidence.subject_id.in_(program_ids),
-                Evidence.normalized_claim.is_not(None),
-            )
-        )
-    ).all()
-    out: dict[str, list[uuid.UUID]] = {}
-    for key, evidence_id in rows:
-        out.setdefault(str(key), []).append(evidence_id)
-    return out
-
-
 async def _deadline_evidence_ids(
     session: AsyncSession, program_ids: set[uuid.UUID], deadline: date | None
 ) -> list[uuid.UUID]:
-    if not program_ids or deadline is None:
-        return []
-    intake = (
-        await session.execute(
-            select(Intake).where(
-                Intake.program_id.in_(program_ids),
-                Intake.application_deadline == deadline,
-            )
-        )
-    ).scalars().first()
+    intake = await pipeline.intake_at_deadline(session, program_ids, deadline)
     if intake is None or intake.evidence_id is None:
         return []
     return [intake.evidence_id]
@@ -985,15 +573,9 @@ async def _max_comparable_tuition(
     """Max in-currency portfolio tuition (see _financial_feasible formula)."""
     if not program_ids or profile is None or profile.budget_currency is None:
         return None
-    rows = (
-        await session.execute(
-            select(Program.tuition_amount).where(
-                Program.id.in_(program_ids),
-                Program.tuition_amount.is_not(None),
-                Program.tuition_currency == profile.budget_currency,
-            )
-        )
-    ).scalars().all()
+    rows = await pipeline.portfolio_tuition_amounts(
+        session, program_ids, profile.budget_currency
+    )
     amounts = [a for a in rows if a is not None]
     if not amounts:
         return None
@@ -1003,81 +585,15 @@ async def _max_comparable_tuition(
 async def portfolio_risk_stats(
     session: AsyncSession, profile_id: uuid.UUID
 ) -> dict[uuid.UUID, tuple[int, str]]:
-    """OPEN risks grouped by program: (count, worst severity).
-
-    Only program-scoped risks count: a portfolio-level risk (budget, documents,
-    freshness) says nothing about which program is safer, so it must not tilt
-    every candidate's rank or force a broaden on its own.
-    """
-    rows = (
-        await session.execute(
-            select(Risk.program_id, Risk.severity).where(
-                Risk.profile_id == profile_id,
-                Risk.status == RiskStatus.OPEN,
-                Risk.program_id.is_not(None),
-            )
-        )
-    ).all()
-    counts: dict[uuid.UUID, int] = {}
-    worst: dict[uuid.UUID, str] = {}
-    for program_id, severity in rows:
-        if program_id is None:
-            continue
-        counts[program_id] = counts.get(program_id, 0) + 1
-        value = severity.value
-        current = worst.get(program_id)
-        if current is None or _SEVERITY_RANK.get(value, 9) < _SEVERITY_RANK.get(current, 9):
-            worst[program_id] = value
-    return {pid: (counts[pid], worst[pid]) for pid in counts}
-
-
-async def _programs_without_career_evidence(
-    session: AsyncSession, program_ids: set[uuid.UUID]
-) -> list[tuple[uuid.UUID, str]]:
-    """(program id, program name) for portfolio programs that carry no
-    claim_type="career" evidence — names come from the stored Program rows."""
-    if not program_ids:
-        return []
-    names = {
-        p.id: p.canonical_name
-        for p in (
-            await session.execute(select(Program).where(Program.id.in_(program_ids)))
-        ).scalars()
-    }
-    with_career = {
-        subject_id
-        for subject_id in (
-            await session.execute(
-                select(Evidence.subject_id).where(
-                    Evidence.subject_type == "program",
-                    Evidence.subject_id.in_(program_ids),
-                    Evidence.claim_type == "career",
-                )
-            )
-        ).scalars()
-        if subject_id is not None
-    }
-    return sorted(
-        (
-            (pid, names[pid])
-            for pid in program_ids
-            if pid in names and pid not in with_career
-        ),
-        key=lambda item: (item[1], str(item[0])),
-    )
+    """OPEN risks grouped by program: (count, worst severity) — see repository."""
+    return await pipeline.portfolio_risk_stats(session, profile_id)
 
 
 async def step_assess_risks(session: AsyncSession, profile_id: uuid.UUID) -> dict[str, Any]:
     # Scoped to this profile's own programs: only its fits and its plans.
     program_ids = await _scope_program_ids(session, profile_id)
     reqs = (
-        list(
-            (
-                await session.execute(
-                    select(Requirement).where(Requirement.program_id.in_(program_ids))
-                )
-            ).scalars().all()
-        )
+        list(await pipeline.requirements_for_programs(session, program_ids))
         if program_ids
         else []
     )
@@ -1091,12 +607,14 @@ async def step_assess_risks(session: AsyncSession, profile_id: uuid.UUID) -> dic
     # Real inputs: conflicts, stale evidence, nearest deadline (past included),
     # budget vs comparable tuition, document readiness, career/language gaps.
     conflict_rows, conflict_evidence_ids = await _unresolved_conflicts(session, program_ids)
-    stale_evidence_ids = await _stale_evidence_ids(session, program_ids, now)
+    stale_evidence_ids = await pipeline.stale_evidence_ids(session, program_ids, now)
     next_deadline = await _nearest_deadline_including_past(session, program_ids)
     deadline_evidence_ids = await _deadline_evidence_ids(session, program_ids, next_deadline)
-    tuition_evidence_ids = await _claim_evidence_ids(session, program_ids, {"tuition_max", "budget_min"})
-    key_evidence_ids = await _evidence_ids_by_key(session, program_ids)
-    career_missing = await _programs_without_career_evidence(session, program_ids)
+    tuition_evidence_ids = await pipeline.claim_evidence_ids(
+        session, program_ids, {"tuition_max", "budget_min"}
+    )
+    key_evidence_ids = await pipeline.evidence_ids_by_key(session, program_ids)
+    career_missing = await pipeline.programs_without_career_evidence(session, program_ids)
     missing_docs = await missing_core_documents(session, profile_id)
 
     profile = await session.get(StudentProfile, profile_id)
@@ -1132,19 +650,10 @@ async def step_assess_risks(session: AsyncSession, profile_id: uuid.UUID) -> dic
     # Risk rows, so re-running it re-derives the whole OPEN portfolio instead
     # of appending duplicates. Resolved/dismissed/acknowledged rows are the
     # student's history and are kept.
-    open_ids = [
-        row[0]
-        for row in (
-            await session.execute(
-                select(Risk.id).where(
-                    Risk.profile_id == profile_id, Risk.status == RiskStatus.OPEN
-                )
-            )
-        ).all()
-    ]
+    open_ids = await pipeline.open_risk_ids(session, profile_id)
     risks_deleted = len(open_ids)
     if open_ids:
-        await session.execute(delete(Risk).where(Risk.id.in_(open_ids)))
+        await pipeline.delete_risks(session, open_ids)
 
     created = 0
     linked = 0
@@ -1193,70 +702,10 @@ async def step_assess_risks(session: AsyncSession, profile_id: uuid.UUID) -> dic
     }
 
 
-def tuition_cost_band(amount: Decimal | None, currency: str | None) -> str | None:
-    """In-currency tuition band: LOW / MEDIUM / HIGH, or None when the amount
-    or the currency is unknown (UNKNOWN is valid — never a guessed band)."""
-    if amount is None or not currency:
-        return None
-    thresholds = TUITION_BAND_THRESHOLDS.get(currency.strip().upper())
-    if thresholds is None:
-        return None
-    low, medium = thresholds
-    if amount < low:
-        return "LOW"
-    if amount < medium:
-        return "MEDIUM"
-    return "HIGH"
-
-
-def _estimated_cost(program: Program | None) -> dict[str, Any]:
-    """Stored tuition with its band (JSONB). Empty when tuition was never
-    extracted — no invented currency, amount, or band."""
-    if program is None or program.tuition_amount is None:
-        return {}
-    return {
-        "currency": program.tuition_currency,
-        "amount": float(program.tuition_amount),
-        "band": tuition_cost_band(program.tuition_amount, program.tuition_currency),
-    }
-
-
-def top_reasons(fit: FitAssessment | None) -> list[str]:
-    """The two strongest dimensions behind this card ("top 2 reasons",
-    FRONTEND_SPEC strategy card). Only stored subscores are quoted; a row
-    without subscores carries no reasons rather than fabricated ones."""
-    if fit is None:
-        return []
-    parts = (
-        ("Academic", fit.academic_score),
-        ("Prerequisites", fit.prerequisite_score),
-        ("Language", fit.language_score),
-        ("Financial", fit.financial_score),
-        ("Career", fit.career_score),
-        ("Timing", fit.timing_score),
-        ("Evidence confidence", fit.evidence_confidence_score),
-    )
-    scored: list[tuple[str, Decimal]] = []
-    for label, value in parts:
-        if value is not None:
-            scored.append((label, value))
-    scored.sort(key=lambda item: item[1], reverse=True)
-    return [
-        f"{label} {value.quantize(Decimal('1'), rounding=ROUND_HALF_UP)}/100"
-        for label, value in scored[:2]
-    ]
-
-
 async def step_build_strategy(
     session: AsyncSession, profile_id: uuid.UUID, research_plan_id: uuid.UUID | None
 ) -> dict[str, Any]:
-    fit_query = select(FitAssessment).where(FitAssessment.profile_id == profile_id)
-    if research_plan_id is not None:
-        # Only this run's assessments; earlier runs keep their own strategies.
-        fit_query = fit_query.where(FitAssessment.research_plan_id == research_plan_id)
-    fits = (
-        await session.execute(fit_query.order_by(FitAssessment.overall_score.desc()))
-    ).scalars().all()
+    fits = await pipeline.strategy_fits(session, profile_id, research_plan_id)
     # A program may carry several fits (re-scored by a later run, or a
     # plan-less rebuild across runs): one program occupies exactly one
     # portfolio slot, and the query's score-desc order keeps the best fit.
@@ -1268,12 +717,7 @@ async def step_build_strategy(
 
     programs: dict[uuid.UUID, Program] = {}
     if scored_ids:
-        programs = {
-            p.id: p
-            for p in (
-                await session.execute(select(Program).where(Program.id.in_(scored_ids)))
-            ).scalars()
-        }
+        programs = await pipeline.programs_by_ids(session, scored_ids)
 
     # TEST_PLAN "Deadline passed -> program excluded": a program whose every
     # known deadline has passed leaves the portfolio, and the ids are reported
@@ -1324,17 +768,10 @@ async def step_build_strategy(
     today = date.today()
     nearest_deadline: dict[uuid.UUID, date] = {}
     if portfolio_ids:
-        for _pid, _deadline in (
-            await session.execute(
-                select(Intake.program_id, Intake.application_deadline)
-                .where(Intake.program_id.in_(portfolio_ids))
-                .where(Intake.application_deadline.is_not(None))
-                .where(Intake.application_deadline >= today)
-            )
-        ).all():
-            if _deadline is not None and (
-                _pid not in nearest_deadline or _deadline < nearest_deadline[_pid]
-            ):
+        for _pid, _deadline in await pipeline.nearest_future_intake_rows(
+            session, portfolio_ids, today
+        ):
+            if _pid not in nearest_deadline or _deadline < nearest_deadline[_pid]:
                 nearest_deadline[_pid] = _deadline
 
     run = StrategyRun(
@@ -1394,9 +831,7 @@ async def step_build_strategy(
     if portfolio_ids:
         names = {
             p.id: p.canonical_name
-            for p in (
-                await session.execute(select(Program).where(Program.id.in_(portfolio_ids)))
-            ).scalars()
+            for p in (await pipeline.programs_by_ids(session, portfolio_ids)).values()
         }
 
     # Evidence links for derived tasks (evidence-metadata rule): every task
@@ -1405,20 +840,9 @@ async def step_build_strategy(
     # behind an intake. Generic tasks stay unlinked rather than guessing.
     evidence_by_program_key: dict[tuple[uuid.UUID, str], list[uuid.UUID]] = {}
     if portfolio_ids:
-        for subject_id, claim_key, evidence_id in (
-            await session.execute(
-                select(Evidence.subject_id, Evidence.normalized_claim, Evidence.id).where(
-                    Evidence.subject_type == "program",
-                    Evidence.subject_id.in_(portfolio_ids),
-                    Evidence.normalized_claim.is_not(None),
-                )
-            )
-        ).all():
-            if subject_id is None:
-                continue  # subject_id is nullable in the model; never link unbound rows
-            evidence_by_program_key.setdefault((subject_id, str(claim_key)), []).append(
-                evidence_id
-            )
+        evidence_by_program_key = await pipeline.all_evidence_keys_by_program(
+            session, portfolio_ids
+        )
 
     def _task_evidence(program_id: uuid.UUID, claim_key: str) -> list[str]:
         """Grounded evidence ids (JSON-string form) for one task, bounded."""
@@ -1432,19 +856,7 @@ async def step_build_strategy(
 
     intake_rows: list[Intake] = []
     if portfolio_ids:
-        intake_rows = list(
-            (
-                await session.execute(
-                    select(Intake)
-                    .where(Intake.program_id.in_(portfolio_ids))
-                    .where(Intake.application_deadline.is_not(None))
-                    .where(Intake.application_deadline >= today)
-                    .order_by(Intake.application_deadline.asc())
-                )
-            )
-            .scalars()
-            .all()
-        )
+        intake_rows = await pipeline.future_intakes(session, portfolio_ids, today)
     for intake in intake_rows:
         program_name = names.get(intake.program_id, "your program")
         deadline = intake.application_deadline
@@ -1472,23 +884,7 @@ async def step_build_strategy(
         )
     requirement_rows: list[Requirement] = []
     if portfolio_ids:
-        requirement_rows = list(
-            (
-                await session.execute(
-                    select(Requirement)
-                    .where(Requirement.program_id.in_(portfolio_ids))
-                    .where(Requirement.mandatory.is_(True))
-                    .where(
-                        Requirement.status.in_(
-                            (RequirementStatus.NOT_SATISFIED, RequirementStatus.CONFLICTING)
-                        )
-                    )
-                    .order_by(Requirement.normalized_key)
-                )
-            )
-            .scalars()
-            .all()
-        )
+        requirement_rows = await pipeline.mandatory_problem_requirements(session, portfolio_ids)
     for req in requirement_rows:
         program_name = names.get(req.program_id, "your program")
         req_evidence = _task_evidence(req.program_id, req.normalized_key)

@@ -7,18 +7,17 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError
 from app.db.models import (
     EducationRecord,
     EducationSubject,
-    ProfilePreference,
     Skill,
     StudentProfile,
     TestScore,
 )
+from app.db.repositories import onboarding as onboarding_repo
 from app.schemas.onboarding import OnboardingField, OnboardingSchema, OnboardingStep
 from app.services.profile import TRACKED_FIELDS, get_or_create_profile
 
@@ -455,21 +454,9 @@ async def _upsert_english_score(
     update never wipes dates set earlier.
     """
     test_type = _english_test_type(answers)
-    result = await session.execute(
-        select(TestScore).where(
-            TestScore.profile_id == profile_id,
-            TestScore.test_type == test_type,
-        )
-    )
-    row = result.scalar_one_or_none()
+    row = await onboarding_repo.english_test_score(session, profile_id, test_type)
     if row is None and test_type != ENGLISH_TEST_TYPE:
-        legacy_result = await session.execute(
-            select(TestScore).where(
-                TestScore.profile_id == profile_id,
-                TestScore.test_type == ENGLISH_TEST_TYPE,
-            )
-        )
-        legacy = legacy_result.scalar_one_or_none()
+        legacy = await onboarding_repo.english_test_score(session, profile_id, ENGLISH_TEST_TYPE)
         if legacy is not None:
             legacy.test_type = test_type  # adopt the row onboarding already owns
             row = legacy
@@ -542,13 +529,7 @@ async def _education_record(
     session: AsyncSession, profile: StudentProfile
 ) -> EducationRecord | None:
     """The profile's current (else newest) education record, if any."""
-    result = await session.execute(
-        select(EducationRecord)
-        .where(EducationRecord.profile_id == profile.id)
-        .order_by(EducationRecord.is_current.is_(True).desc(), EducationRecord.created_at.desc())
-        .limit(1)
-    )
-    return result.scalars().first()
+    return await onboarding_repo.current_education_record(session, profile.id)
 
 
 async def _replace_subjects(
@@ -565,10 +546,7 @@ async def _replace_subjects(
     subjects = _to_subjects(raw)
     record = await _education_record(session, profile)
     if record is not None:
-        existing = await session.execute(
-            select(EducationSubject).where(EducationSubject.education_record_id == record.id)
-        )
-        for row in existing.scalars().all():
+        for row in await onboarding_repo.education_subjects(session, record.id):
             await session.delete(row)
         # DELETEs must reach the database before the INSERTs (re-submission safety).
         await session.flush()
@@ -601,23 +579,14 @@ async def _replace_subjects(
 
 async def _replace_skills(session: AsyncSession, profile_id: UUID, items: list[str]) -> None:
     """Replace the skills captured by onboarding (leaves other Skill rows alone)."""
-    result = await session.execute(
-        select(Skill).where(Skill.profile_id == profile_id, Skill.source == SKILL_SOURCE)
-    )
-    for row in result.scalars().all():
+    for row in await onboarding_repo.skills_by_source(session, profile_id, SKILL_SOURCE):
         await session.delete(row)
     if not items:
         return
     # DELETEs must reach the database before the INSERTs: skills carry a
     # UNIQUE (profile_id, skill_name) constraint.
     await session.flush()
-    taken = set(
-        (
-            await session.execute(select(Skill.skill_name).where(Skill.profile_id == profile_id))
-        )
-        .scalars()
-        .all()
-    )
+    taken = set(await onboarding_repo.profile_skill_names(session, profile_id))
     for name in dict.fromkeys(items):
         if name in taken:
             continue  # already on the profile from another source
@@ -646,10 +615,7 @@ async def answered_from_db(session: AsyncSession) -> set[str]:
     for key in PROFILE_PROGRESS_KEYS:
         if _is_answered(key, getattr(profile, key, None)):
             filled.add(key)
-    result = await session.execute(
-        select(ProfilePreference).where(ProfilePreference.profile_id == profile.id)
-    )
-    prefs = result.scalar_one_or_none()
+    prefs = await onboarding_repo.profile_preference(session, profile.id)
     if prefs is not None:
         for key in PREFERENCE_PROGRESS_LIST_KEYS:
             if getattr(prefs, key, None):
@@ -660,26 +626,11 @@ async def answered_from_db(session: AsyncSession) -> set[str]:
         for key in PREFERENCE_PROGRESS_DECIMAL_KEYS:
             if getattr(prefs, key, None) is not None:
                 filled.add(key)
-    skill = (
-        await session.execute(select(Skill.id).where(Skill.profile_id == profile.id).limit(1))
-    ).first()
-    if skill is not None:
+    if await onboarding_repo.has_profile_skill(session, profile.id):
         filled.add("skills")
-    english = (
-        await session.execute(
-            select(TestScore.id)
-            .where(
-                TestScore.profile_id == profile.id,
-                # Real test types are stored as reported (IELTS, TOEFL, ...);
-                # matching is case-insensitive and a scoreless row (type-only
-                # payload) never credits a score the user did not give.
-                func.lower(TestScore.test_type).in_(ENGLISH_TEST_TYPES_LOWER),
-                TestScore.overall_score.is_not(None),
-            )
-            .limit(1)
-        )
-    ).first()
-    if english is not None:
+    if await onboarding_repo.has_scored_english_test(
+        session, profile.id, ENGLISH_TEST_TYPES_LOWER
+    ):
         filled.add("english_test_overall")
     return filled
 
@@ -696,10 +647,7 @@ async def apply_answers(session: AsyncSession, answers: dict[str, Any]) -> set[s
     """
     profile = await get_or_create_profile(session)
     filled: set[str] = set()
-    result = await session.execute(
-        select(ProfilePreference).where(ProfilePreference.profile_id == profile.id)
-    )
-    preferences = result.scalar_one()
+    preferences = await onboarding_repo.profile_preference_required(session, profile.id)
     for key, value in answers.items():
         if key in PROFILE_FIELD_MAP:
             if key in BOOL_FIELDS:

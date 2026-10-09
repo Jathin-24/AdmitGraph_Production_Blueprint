@@ -4,7 +4,9 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.budget import reject_if_budget_spent
 from app.core.errors import AppError
+from app.core.limits import get_limiter
 from app.db.models import ResearchPlan
 from app.db.repositories import research as research_repo
 from app.db.session import get_session
@@ -39,6 +41,26 @@ async def _get_plan_or_404(session: AsyncSession, run_id: uuid.UUID) -> Research
     return plan
 
 
+def _reject_if_user_at_cap(user_id: uuid.UUID) -> None:
+    """P1-7 per-user cap: fail fast instead of queueing forever.
+
+    This is a non-blocking PEEK only — the real slots are taken later by
+    ``run_plan_capped`` (app.core.limits) at dispatch, so the run that does
+    get through still holds exactly one slot. At the cap, starting another
+    run could never be admitted before the current ones finish, so the API
+    answers 429 RESOURCE_EXHAUSTED with an actionable message instead of
+    creating a plan that would sit QUEUED indefinitely.
+    """
+    limiter = get_limiter()
+    if limiter.active_for(user_id) >= limiter.max_per_user:
+        raise AppError(
+            429,
+            "RESOURCE_EXHAUSTED",
+            f"You already have {limiter.max_per_user} research runs in progress — "
+            "wait for one to finish, then start another.",
+        )
+
+
 @router.post("/research/plan", response_model=ResearchPlanOut)
 async def create_plan(
     payload: ResearchPlanCreate,
@@ -46,6 +68,9 @@ async def create_plan(
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> ResearchPlanOut:
     profile = await get_or_create_profile(session)
+    _reject_if_user_at_cap(profile.user_id)
+    # P1-8 aggregate spend bound: one COUNT of today's search_runs rows.
+    await reject_if_budget_spent(session, profile.user_id)
     goal = {**payload.goal, "intake_year": payload.intake_year or datetime.now(UTC).year + 1}
     service = ResearchService(session=session)
     plan = await service.create_plan(session, profile.id, goal, idempotency_key=idempotency_key)
@@ -63,6 +88,9 @@ async def create_run(
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> ResearchPlanOut:
     profile = await get_or_create_profile(session)
+    _reject_if_user_at_cap(profile.user_id)
+    # P1-8 aggregate spend bound: one COUNT of today's search_runs rows.
+    await reject_if_budget_spent(session, profile.user_id)
     goal = {**payload.goal, "intake_year": payload.intake_year or datetime.now(UTC).year + 1}
     service = ResearchService(session=session)
     plan = await service.create_plan(session, profile.id, goal, idempotency_key=idempotency_key)

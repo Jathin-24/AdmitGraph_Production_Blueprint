@@ -130,7 +130,13 @@ export default function LoginPage() {
           </label>
 
           <label className="flex flex-col gap-1.5">
-            <span className="label">Password</span>
+            <span className="flex items-baseline justify-between gap-2">
+              <span className="label">Password</span>
+              {/* Same recovery path as the copy on /forgot-password. */}
+              <Link href="/forgot-password" className="link text-xs">
+                Forgot password?
+              </Link>
+            </span>
             <span className="flex gap-2">
               <input
                 className="field min-w-0 flex-1"

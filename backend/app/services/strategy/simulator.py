@@ -55,21 +55,17 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.db.models import (
-    ApplicationPlan,
-    Country,
     Evidence,
-    FitAssessment,
-    Program,
     ProgramCategory,
     Requirement,
     RequirementStatus,
     StrategyRun,
 )
+from app.db.repositories import simulator as simulator_repo
+from app.db.repositories import strategy_pipeline as pipeline
 from app.services.matching.evaluator import ProfileFacts, evaluate
 from app.services.scoring.scorer import DimensionInput, overall_score
 from app.services.strategy.persist import (
@@ -298,12 +294,10 @@ async def _dropped_country_codes(session: AsyncSession, entries: Any) -> set[str
         if len(text) == 2 and text.isalpha():
             codes.add(text.upper())
             continue
-        row = (
-            await session.execute(select(Country.code).where(Country.name.ilike(text)))
-        ).scalar_one_or_none()
+        row = await simulator_repo.country_code_by_name(session, text)
         if row is None:
             return None
-        codes.add(str(row))
+        codes.add(row)
     return codes or None
 
 
@@ -319,31 +313,14 @@ async def recompute_portfolio(
 
     Returns (portfolio_after rows, number of candidates actually scored).
     """
-    fit_query = select(FitAssessment).where(FitAssessment.profile_id == strategy.profile_id)
-    if strategy.research_plan_id is not None:
-        fit_query = fit_query.where(FitAssessment.research_plan_id == strategy.research_plan_id)
-    fits = (
-        (await session.execute(fit_query.order_by(FitAssessment.overall_score.desc())))
-        .scalars()
-        .all()
-    )
+    fits = await pipeline.strategy_fits(session, strategy.profile_id, strategy.research_plan_id)
     order: list[UUID] = []
     seen: set[UUID] = set()
     for fit in fits:
         if fit.program_id not in seen:
             seen.add(fit.program_id)
             order.append(fit.program_id)
-    plan_ids = (
-        (
-            await session.execute(
-                select(ApplicationPlan.program_id).where(
-                    ApplicationPlan.strategy_run_id == strategy.id
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
+    plan_ids = await simulator_repo.plan_program_ids_for_strategy(session, strategy.id)
     for program_id in plan_ids:
         if program_id not in seen:
             seen.add(program_id)
@@ -354,27 +331,9 @@ async def recompute_portfolio(
     if not candidate_ids:
         return [], 0
 
-    programs = (
-        (
-            await session.execute(
-                select(Program)
-                .where(Program.id.in_(candidate_ids))
-                .options(selectinload(Program.institution))
-            )
-        )
-        .scalars()
-        .all()
-    )
+    programs = await simulator_repo.programs_with_institution(session, candidate_ids)
     by_program = {p.id: p for p in programs}
-    requirements = (
-        (
-            await session.execute(
-                select(Requirement).where(Requirement.program_id.in_(candidate_ids))
-            )
-        )
-        .scalars()
-        .all()
-    )
+    requirements = await pipeline.requirements_for_programs(session, set(candidate_ids))
     reqs_by_program: dict[UUID, list[Requirement]] = {}
     for req in requirements:
         reqs_by_program.setdefault(req.program_id, []).append(req)
@@ -386,19 +345,7 @@ async def recompute_portfolio(
     # open risks per program, and programs whose deadlines all passed.
     evidence_by_program: dict[UUID, list[Evidence]] = {}
     if candidate_ids:
-        evidence_rows = (
-            (
-                await session.execute(
-                    select(Evidence).where(
-                        Evidence.subject_type == "program",
-                        Evidence.subject_id.in_(candidate_ids),
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        for row in evidence_rows:
+        for row in await simulator_repo.program_evidence(session, candidate_ids):
             if row.subject_id is not None:
                 evidence_by_program.setdefault(row.subject_id, []).append(row)
     passed_deadlines = await programs_with_passed_deadlines(session, set(candidate_ids))

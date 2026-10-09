@@ -1,75 +1,174 @@
 # AdmitGraph Test Plan
 
+Status legend: **✅ implemented** — tests exist today; **🟡 partial** — covered
+in a weaker form than the plan imagined (noted inline); **⛔ not implemented** —
+no code, no test.
+
+Verification date: 2026-10. Backend: **580 tests passing, 91 % line coverage of
+`backend/app`** (`pytest -q --cov=app --cov-report=term-missing`). Frontend: **30
+tests** (`cd frontend && npm test`, Vitest + Testing Library). CI runs ruff,
+mypy, the full backend suite, a frontend source scan, the OpenAPI/path contract
+checks and staleness diffs for every derived artefact.
+
 ## Unit tests
-1. CGPA normalization.
-2. Percentage normalization.
-3. Language score threshold.
-4. Test expiry.
-5. Prerequisite subject matching.
-6. Credit matching.
-7. Deadline comparison.
-8. Budget comparison.
-9. Evidence freshness.
-10. Source authority.
-11. Evidence conflict.
-12. Fit score calculation.
-13. Risk severity.
-14. Portfolio category.
-15. Portfolio diversification.
-16. Counterfactual scenario transformations.
+All sixteen live under `backend/tests/` (mostly `test_matching_scoring.py`,
+`test_fit_scoring.py`, `test_risk.py`, `test_strategy.py`, `test_simulator.py`,
+`test_evidence.py`). **✅ implemented**
+
+1. CGPA normalization — `test_matching_scoring.py`, `test_onboarding_wizard.py`.
+2. Percentage normalization — `test_matching_scoring.py`.
+3. Language score threshold — `test_ielts_threshold_partial`,
+   `test_missing_ielts_is_unknown_not_guessed`,
+   `test_reported_non_ielts_needs_verification_never_conversion`.
+4. Test expiry — `test_expiry_is_checked_before_the_missing_score`, `test_risk.py`.
+5. Prerequisite subject matching — `test_matching_scoring.py`, `test_risk.py`.
+6. Credit matching — `test_credits_below_threshold_fail`,
+   `test_matching_scoring.py`.
+7. Deadline comparison — `test_risk.py`, `test_matching_scoring.py`,
+   `test_api_shapes.py`.
+8. Budget comparison — `test_budget_threshold`, `test_fit_scoring.py`.
+9. Evidence freshness — `test_evidence.py`, `test_authority.py`.
+10. Source authority — `test_authority.py`.
+11. Evidence conflict — `test_evidence.py` (detection, resolution, scoping).
+12. Fit score calculation — `test_fit_scoring.py`.
+13. Risk severity — `test_risk.py`.
+14. Portfolio category — `test_strategy.py`, `test_api_shapes.py`.
+15. Portfolio diversification — `test_strategy.py`.
+16. Counterfactual scenario transformations — `test_simulator.py`,
+    `test_simulation_monitoring.py`.
 
 ## Required test cases
+
 ### Complete profile
-Expected: strategy generated with evidence.
+Expected: strategy generated with evidence. **✅** — `test_strategy_api.py`,
+`test_demo.py` (end-to-end replay of a captured run).
 
 ### Missing IELTS
-Expected: language risk; no invented score.
+Expected: language risk; no invented score. **✅** —
+`test_missing_ielts_is_unknown_not_guessed`, `test_risk.py`.
 
 ### Insufficient prerequisite
-Expected: critical/high risk and verification action.
+Expected: critical/high risk and verification action. **✅** —
+`test_matching_scoring.py`, `test_risk.py`.
 
 ### Conflicting deadline
-Expected: conflict visible; confidence downgraded.
+Expected: conflict visible; confidence downgraded. **✅** — `test_evidence.py`
+(detection + resolution), `test_risk.py`.
 
 ### No official source
-Expected: UNKNOWN.
+Expected: UNKNOWN. **✅** — `test_authority.py`, `test_evidence.py`
+(`UNKNOWN` authority/status stays UNKNOWN, never a guess).
 
 ### Low budget
-Expected: financial risk and alternatives.
+Expected: financial risk and alternatives. **✅** — `test_budget_threshold`,
+`test_risk.py`, `test_strategy.py`.
 
 ### Deadline passed
-Expected: program excluded or marked unavailable for selected intake.
+Expected: program excluded or marked unavailable for selected intake. **✅** —
+`test_planner.py`, `test_risk.py` (DEADLINE risks), `test_simulator.py`
+(`DEADLINE_MISSED`).
 
 ### All top programs risky
-Expected: broaden strategy.
+Expected: broaden strategy. **✅** — `test_strategy.py` portfolio-category +
+diversification cases, `test_risk.py`.
 
 ### SerpApi timeout
-Expected: partial/cached evidence if valid; no UI crash.
+Expected: partial/cached evidence if valid; no UI crash. **🟡 partial** —
+`test_serpapi.py` + `test_research_reliability.py` cover provider errors,
+retries and degraded runs server-side (timeout, HTTP errors, empty/invalid
+payloads). "No UI crash" is asserted by the frontend's error-boundary/route
+behaviour rather than an automated browser test — there is **no
+Playwright/Cypress suite**.
 
 ### LLM malformed JSON
-Expected: validation retry then safe failure.
+Expected: validation retry then safe failure. **✅** — `test_llm_extraction.py`
+(extraction/validation retry, safe failure), `test_research_reliability.py`.
 
 ### Provider rate/credit error
-Expected: friendly error and cached evidence where valid.
+Expected: friendly error and cached evidence where valid. **✅ server-side** —
+`test_security.py` (429 envelope), `test_throttling.py`, `test_research_reliability.py`.
+Note: the daily `429 BUDGET_EXCEEDED` search budget (plan item P1-8) is now
+**implemented and tested** — `test_budget.py` (helpers + settings defaults/env)
+and `integration/test_research_budget_db.py` (429 at the budget on both run
+endpoints, admission below it, `0` = unlimited, only-today's-rows counting,
+per-user isolation). The other enforced spend bounds remain the per-IP rate
+limits and the per-user concurrent-run cap (`429 RESOURCE_EXHAUSTED`,
+`test_limits.py`).
 
 ### Duplicate program
-Expected: canonicalization prevents duplicate program records.
+Expected: canonicalization prevents duplicate program records. **✅** —
+`test_matching_scoring.py` canonicalization cases.
 
 ### Stale evidence
-Expected: visible stale state and recheck option.
+Expected: visible stale state and recheck option. **✅** — `test_evidence.py`
+(freshness deadlines, recheck + its 404 → 429 → 409 error order),
+`test_scheduler.py` (freshness sweep).
 
 ### Monitoring change
-Expected: snapshot and material-change alert.
+Expected: snapshot and material-change alert. **✅** — `test_monitoring.py`,
+`test_platform_monitor_api.py`.
 
 ## Security tests
-- API key not present in frontend build.
-- CORS blocks unknown origin.
-- rate limit expensive endpoints.
-- malformed UUID rejected.
-- oversized payload rejected.
-- arbitrary URL fetching blocked.
-- logs contain no secret.
-- authorization prevents cross-user profile access.
+**✅ all implemented**
+
+- API key not present in frontend build — `backend/tests/test_frontend_secrets.py`
+  (source scan of `frontend/` + env files) **and**
+  `frontend/app/source-scan.test.ts` (no credential-shaped literals, no bare
+  `fetch(` outside the auth-attaching clients).
+- CORS blocks unknown origin — `test_security.py::test_cors_unknown_origin_blocked`.
+- rate limit expensive endpoints — `test_security.py` (plan/recheck/GET-provider
+  paths, per-user buckets, counter eviction), `test_session_hardening.py`
+  (forgot/verify-request 5/min per IP and per target email).
+- malformed UUID rejected — `test_security.py::test_malformed_uuid_rejected`.
+- oversized payload rejected — `test_security.py` (middleware cap, chunked
+  bodies, understated Content-Length) + `FILE_TOO_LARGE` upload tests.
+- arbitrary URL fetching blocked — `test_security.py::test_no_ssrf_or_cross_user_url_params`,
+  `test_prompt_injection.py` (prompt-injection hardening).
+- logs contain no secret — `test_security.py::test_logs_contain_no_secrets`,
+  `test_platform_logging.py`.
+- authorization prevents cross-user profile access — `test_api_shapes.py`,
+  `test_strategy_api.py`, `test_evidence.py` (404-not-403 scoping for runs,
+  strategies, subscriptions, documents, notifications, evidence),
+  `test_session_hardening.py` (TOKEN_STALE).
+
+Not in the original plan but added: security-header assertions, JWT
+key-derivation/forgery, production fail-closed without `JWT_SECRET`, Docker
+image hygiene (`test_image_hygiene.py`), readiness `503` (`test_health_ready.py`),
+metrics (`test_metrics.py`).
 
 ## Contract tests
-OpenAPI schemas match frontend client types.
+
+- **✅** API path contract — `backend/tests/test_contract.py` extracts the route
+  table from the FastAPI app and asserts the paths the clients depend on (it
+  asserts **path extraction**, not generated schemas).
+- **✅** OpenAPI spec freshness — `api/openapi.json` is exported by
+  `backend/scripts/export_openapi.py`; CI regenerates it and diffs.
+- **✅** Frontend generated types freshness — `npm run gen:api-types`
+  (`openapi-typescript`) writes `frontend/app/lib/api-types.generated.ts`; CI
+  diffs it, and `frontend/app/lib/api-contract.test.ts` asserts the committed
+  spec, the generated `paths` type and the endpoints the client calls all agree.
+  (This is the implemented form of "OpenAPI schemas match frontend client
+  types".)
+- **✅** `database/schema.sql` freshness — CI regenerates it from a
+  freshly-migrated database and diffs (`test_export_schema.py` locally).
+
+## Frontend test plan (P2-24, implemented)
+
+Runner: Vitest + jsdom + Testing Library (`cd frontend && npm test`).
+
+- `app/lib/api.test.ts` — `apiFetch` URL building, auth header, error envelope
+  → typed error, retry/backoff behaviour.
+- `app/lib/schemas.test.ts` — zod response schemas accept real payloads and
+  reject malformed ones.
+- `app/providers-retry.test.tsx` — React Query retry policy (no retry on 4xx).
+- `app/components/nav.test.tsx` — nav rendering, accessible mobile disclosure
+  (`aria-expanded`/`aria-controls`), account menu wiring.
+- `app/explore/filters-url.test.tsx` — explore filters ↔ URL sync (query, page,
+  country selection resets paging).
+- `app/source-scan.test.ts` — no bare `fetch(` outside `lib/api.ts` /
+  `lib/api-extra.ts` in client code, no credential-shaped literals.
+- `app/lib/api-contract.test.ts` — spec ↔ generated types ↔ client endpoints.
+
+Not covered (documented gaps): no browser/E2E suite (Playwright/Cypress), no
+visual regression tests, no accessibility audit beyond the ARIA assertions in
+the nav test.

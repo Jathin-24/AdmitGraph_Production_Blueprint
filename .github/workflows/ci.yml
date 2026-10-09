@@ -35,8 +35,45 @@ jobs:
         working-directory: backend
       - run: mypy app
         working-directory: backend
-      - run: pytest -q
+      # P1-12: api/openapi.json is a derived artefact — regenerate it from the
+      # app and fail if it drifted (mirrors the schema.sql check below; no DB
+      # needed, so it runs before pytest).
+      - name: api/openapi.json matches the FastAPI app (regenerate + diff)
+        run: |
+          python -m scripts.export_openapi --output "$RUNNER_TEMP/openapi_ci.json"
+          if ! diff -u ../api/openapi.json "$RUNNER_TEMP/openapi_ci.json"; then
+            echo "::error file=api/openapi.json::api/openapi.json is stale — regenerate it with: cd backend && python -m scripts.export_openapi"
+            exit 1
+          fi
         working-directory: backend
+      # The suite includes the frontend source scan (tests/test_frontend_secrets.py)
+      # and the path-extraction contract test (tests/test_contract.py); coverage is
+      # REPORTED only — no threshold is enforced yet (W6).
+      - name: pytest (580 tests, coverage reported)
+        run: pytest -q --cov=app --cov-report=term-missing
+        working-directory: backend
+      # Named step so a secrets/contract regression is obvious in the checks UI
+      # (the same tests already ran above — cheap, no DB needed).
+      - name: secrets scan + API path contract
+        run: pytest -q tests/test_frontend_secrets.py tests/test_contract.py
+        working-directory: backend
+      # P1-6: database/schema.sql is a derived artefact and must never diverge
+      # from the Alembic history. Regenerate from a freshly-migrated database
+      # and diff. The per-run pg_dump `\restrict` token and the machine-specific
+      # "Regenerate:" hint line are normalised away; pg_dump runs inside the
+      # same postgres:16 image as the service so the dump format matches.
+      - name: database/schema.sql matches Alembic (regenerate + diff)
+        run: |
+          python -m scripts.export_schema --url "$DATABASE_URL" --output "$RUNNER_TEMP/schema_ci.sql" \
+            --pg-dump-cmd "docker run --rm --network host -e PGPASSWORD=admitgraph_dev_password postgres:16 pg_dump -h localhost -p 5433 -U admitgraph -d admitgraph"
+          strip() { grep -vE '^\\(restrict|unrestrict) |^-- Regenerate:' "$1"; }
+          if ! diff -u <(strip "$RUNNER_TEMP/schema_ci.sql") <(strip ../database/schema.sql); then
+            echo "::error file=database/schema.sql::database/schema.sql is stale — regenerate it with: cd backend && python -m scripts.export_schema --url <scratch-db-url>"
+            exit 1
+          fi
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+asyncpg://admitgraph:admitgraph_dev_password@localhost:5433/admitgraph
 
   frontend:
     runs-on: ubuntu-latest
@@ -51,9 +88,28 @@ jobs:
         working-directory: frontend
       - run: npm run lint
         working-directory: frontend
-      - run: npx tsc --noEmit
+      # P1-12: app/lib/api-types.generated.ts is generated from ../api/openapi.json
+      # — regenerate and fail on drift so a backend route rename can't silently
+      # desynchronise the client's types. `git diff` catches a modified file;
+      # an untracked one (never committed) is caught by `git status`.
+      - name: api-types.generated.ts matches api/openapi.json (regenerate + diff)
+        run: |
+          npm run gen:api-types
+          if ! git diff --exit-code -- app/lib/api-types.generated.ts || \
+             [ -n "$(git status --porcelain -- app/lib/api-types.generated.ts)" ]; then
+            echo "::error file=frontend/app/lib/api-types.generated.ts::generated API types are stale — run: cd frontend && npm run gen:api-types"
+            exit 1
+          fi
         working-directory: frontend
+      - run: npm test
+        working-directory: frontend
+      # `next build` generates next-env.d.ts, which is gitignored — the type
+      # check must run AFTER the build (or dev), otherwise tsc fails on the
+      # missing Next.js type references (the old lint → tsc → build order was
+      # a guaranteed red check on a fresh checkout).
       - run: npm run build
+        working-directory: frontend
+      - run: npx tsc --noEmit
         working-directory: frontend
 
   docker:

@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.budget import reject_if_budget_spent
 from app.core.errors import AppError
 from app.db.models import MonitorSubscription
 from app.db.repositories import monitor as monitor_repo
@@ -87,8 +88,16 @@ async def run_check(
     subscription_id: uuid.UUID, session: AsyncSession = Depends(get_session)
 ) -> dict[str, Any]:
     # Owner scoping: another user's subscription is indistinguishable from a
-    # missing one (404), enforced inside MonitoringService.run_check.
+    # missing one (404), enforced here FIRST (and again inside
+    # MonitoringService.run_check) so a budget rejection never reveals that a
+    # foreign subscription exists.
     profile = await get_or_create_profile(session)
+    subscription = await monitor_repo.get_subscription(session, subscription_id)
+    if subscription is None or subscription.profile_id != profile.id:
+        raise AppError(404, "NOT_FOUND", "Monitor subscription not found")
+    # P1-8: a live check spends one SerpApi search — refuse at the daily
+    # budget BEFORE any provider call (429 BUDGET_EXCEEDED, plain language).
+    await reject_if_budget_spent(session, profile.user_id)
     snapshot = await MonitoringService().run_check(
         session, subscription_id, owner_profile_id=profile.id
     )

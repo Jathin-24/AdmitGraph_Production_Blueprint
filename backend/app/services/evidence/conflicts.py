@@ -19,7 +19,6 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
@@ -31,6 +30,7 @@ from app.db.models import (
     Source,
     SourceAuthority,
 )
+from app.db.repositories import evidence as evidence_repo
 
 # Highest-trust first. The ordering is the declaration order of
 # SourceAuthority (official channels above secondary ones above social/unknown).
@@ -76,10 +76,7 @@ async def authority_preferred_evidence(
     source_ids = {r.source_id for r in rows if r.source_id is not None}
     sources: dict[UUID, Source] = {}
     if source_ids:
-        sources = {
-            s.id: s
-            for s in (await session.execute(select(Source).where(Source.id.in_(source_ids)))).scalars()
-        }
+        sources = await evidence_repo.sources_by_ids(session, source_ids)
     return min(
         rows,
         key=lambda r: _authority_key(
@@ -92,10 +89,7 @@ class ConflictDetectionService:
     async def detect_for_subject(
         self, session: AsyncSession, subject_type: str, subject_id: UUID
     ) -> list[EvidenceConflict]:
-        result = await session.execute(
-            select(Evidence).where(Evidence.subject_type == subject_type, Evidence.subject_id == subject_id)
-        )
-        evidence_rows = list(result.scalars().all())
+        evidence_rows = await evidence_repo.evidence_for_subject(session, subject_type, subject_id)
         by_key: dict[str, list[Evidence]] = defaultdict(list)
         for row in evidence_rows:
             if row.normalized_claim:
@@ -113,17 +107,8 @@ class ConflictDetectionService:
                 continue
             conflict_key = f"{subject_type}:{subject_id}:{key}"
             # Idempotent: one UNRESOLVED group per conflict key.
-            existing = (
-                await session.execute(
-                    select(EvidenceConflict).where(
-                        EvidenceConflict.conflict_key == conflict_key,
-                        EvidenceConflict.resolution_status == "UNRESOLVED",
-                    )
-                )
-            ).scalar_one_or_none()
-            if existing is not None:
-                conflict = existing
-            else:
+            conflict = await evidence_repo.unresolved_conflict(session, conflict_key)
+            if conflict is None:
                 conflict = EvidenceConflict(
                     conflict_key=conflict_key,
                     description=f"Conflicting values for '{key}' across {len(rows)} sources",
@@ -131,14 +116,7 @@ class ConflictDetectionService:
                 session.add(conflict)
                 await session.flush()
             for row in rows:
-                member = (
-                    await session.execute(
-                        select(EvidenceConflictMember).where(
-                            EvidenceConflictMember.conflict_id == conflict.id,
-                            EvidenceConflictMember.evidence_id == row.id,
-                        )
-                    )
-                ).scalar_one_or_none()
+                member = await evidence_repo.conflict_member(session, conflict.id, row.id)
                 if member is None:
                     session.add(EvidenceConflictMember(conflict_id=conflict.id, evidence_id=row.id))
                 # Keep both claims; flag + downgrade confidence (never a winner).

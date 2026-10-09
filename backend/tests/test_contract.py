@@ -116,9 +116,18 @@ def test_frontend_api_paths_resolve_against_openapi() -> None:
     paths = {canonical(p) for p in _spec()["paths"]}
     unresolved = []
     for lit in literals:
-        path = lit.split("?")[0]
-        full = canonical(f"/api/v1{path}")
-        if full not in paths:
-            unresolved.append(full)
+        # A literal may build its query string with NESTED template
+        # interpolation (`/programs${qs ? \`?${qs}\` : ""}`), which the naive
+        # capture above truncates at the inner backtick. The leading segment
+        # is the real endpoint, so accept the literal whole OR cut at the
+        # first "${" — an endpoint must resolve under at least one form.
+        candidates = [lit]
+        if "${" in lit:
+            candidates.append(lit.split("${", 1)[0])
+        resolved = any(
+            canonical(f"/api/v1{candidate.split('?')[0]}") in paths for candidate in candidates
+        )
+        if not resolved:
+            unresolved.append(canonical(f"/api/v1{lit.split('?')[0]}"))
     assert literals, "expected api.ts to call apiFetch at least once"
     assert unresolved == [], f"frontend calls unknown endpoints: {unresolved}"

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { EmptyState, ErrorNote, LoadingNote, PageHeader, fmtDate, fmtDateTime } from "../components/ui";
 import {
@@ -12,6 +12,7 @@ import {
   type MonitorChange,
   type MonitorCheck,
 } from "../lib/api";
+import { isRouteUnavailable } from "../lib/api-extra";
 
 const FIELD_OPTIONS = [
   { value: "deadline", label: "Deadline changed" },
@@ -176,17 +177,74 @@ export default function MonitorPage() {
   });
 
   const subItems = subscriptions.data?.items ?? [];
-  const historyIds = subItems.slice(0, 12).map((s) => s.id);
 
-  // One shared history query per subscription: feeds both the per-row history
-  // panel and the "What changed" cards above.
-  const historyResults = useQueries({
-    queries: historyIds.map((id) => ({
-      queryKey: ["subscription-changes", id],
-      queryFn: () => getSubscriptionChanges(id),
-    })),
+  /* N+1 guard — this used to fire up to 12 parallel history requests on every
+   * mount. Now:
+   *  - ONE shared query key per batch, so react-query dedupes identical
+   *    in-flight requests (remounts, focus refetches, StrictMode double runs),
+   *  - only subscriptions that have actually been checked can have history —
+   *    never-checked rows are skipped entirely,
+   *  - chunks of at most 3 concurrent requests via Promise.allSettled, so one
+   *    failing subscription can't cancel the rest,
+   *  - each result is also written to the per-id ["subscription-changes", id]
+   *    cache, so the per-row History panel reads from cache instead of
+   *    refetching (and the expanded row fetches on its own only when it fell
+   *    outside the batch window).
+   * Backend handoff: a batch endpoint `GET /monitor/history?ids=a,b,c` would
+   * collapse this whole batch into a single request. */
+  const HISTORY_CONCURRENCY = 3;
+  const HISTORY_WINDOW = 12;
+  const historyIds = subItems
+    .filter((s) => s.last_checked_at)
+    .slice(0, HISTORY_WINDOW)
+    .map((s) => s.id);
+
+  const historyBatch = useQuery({
+    queryKey: ["subscription-changes-batch", historyIds.join("|")],
+    enabled: historyIds.length > 0,
+    staleTime: 60_000,
+    queryFn: async () => {
+      const map = new Map<string, MonitorChange[]>();
+      let routeMissing = false;
+      for (let i = 0; i < historyIds.length; i += HISTORY_CONCURRENCY) {
+        const chunk = historyIds.slice(i, i + HISTORY_CONCURRENCY);
+        const settled = await Promise.allSettled(
+          chunk.map((id) => getSubscriptionChanges(id))
+        );
+        settled.forEach((result, index) => {
+          const id = chunk[index];
+          if (result.status === "fulfilled") {
+            map.set(id, result.value.items);
+            // Share the per-id cache key so row panels never refetch.
+            queryClient.setQueryData(["subscription-changes", id], result.value);
+          } else if (isRouteUnavailable(result.reason)) {
+            routeMissing = true;
+          }
+          // Other per-id failures leave that subscription without cards —
+          // the rest of the batch still renders.
+        });
+      }
+      return { map, routeMissing };
+    },
   });
-  const historyById = new Map(historyIds.map((id, i) => [id, historyResults[i]]));
+
+  // An expanded subscription outside the batch window (13th+ checked row)
+  // fetches its own history on demand — shared key, staleTime stops repeat
+  // hits while the panel is open.
+  const expandedSub = openHistory ? subItems.find((s) => s.id === openHistory) : undefined;
+  const expandedInBatch = !!openHistory && historyIds.includes(openHistory);
+  const expandedQuery = useQuery({
+    queryKey: ["subscription-changes", openHistory ?? "none"],
+    queryFn: () => getSubscriptionChanges(openHistory!),
+    enabled: !!expandedSub?.last_checked_at && !expandedInBatch,
+    staleTime: 5 * 60_000,
+  });
+
+  const historyFor = (id: string): MonitorChange[] =>
+    historyBatch.data?.map.get(id) ??
+    (id === openHistory ? (expandedQuery.data?.items ?? []) : []);
+  const historyLoadingFor = (id: string): boolean =>
+    historyBatch.isLoading || (id === openHistory && expandedQuery.isLoading);
 
   const create = useMutation({
     mutationFn: () =>
@@ -211,9 +269,9 @@ export default function MonitorPage() {
     context: string;
   };
   const cards: CardRow[] = [];
-  const historyLoading = historyResults.some((q) => q.isLoading);
+  const historyLoading = historyBatch.isLoading;
   for (const sub of subItems) {
-    const rows = historyById.get(sub.id)?.data?.items ?? [];
+    const rows = historyFor(sub.id);
     const fieldLabel =
       FIELD_OPTIONS.find((f) => f.value === sub.field_key)?.label ?? sub.field_key;
     for (const change of rows) {
@@ -246,7 +304,9 @@ export default function MonitorPage() {
           {historyLoading && cards.length === 0 && <LoadingNote what="Loading change history…" />}
           {!historyLoading && topCards.length === 0 && (
             <p className="text-sm text-ink-faint">
-              No material changes yet — the last checks found nothing worth flagging.
+              {subItems.some((s) => s.last_checked_at)
+                ? "No material changes yet — the last checks found nothing worth flagging."
+                : "No checks have run yet — scheduled checks start recording changes here."}
             </p>
           )}
           {topCards.length > 0 && (
@@ -405,11 +465,9 @@ export default function MonitorPage() {
               )}
               {openHistory === s.id && (
                 <div className="mt-3 border-t border-line pt-3">
-                  {historyById.get(s.id)?.isLoading && (
-                    <LoadingNote what="Loading history…" />
-                  )}
+                  {historyLoadingFor(s.id) && <LoadingNote what="Loading history…" />}
                   <ul className="flex flex-col gap-2.5 text-xs text-ink-soft">
-                    {(historyById.get(s.id)?.data?.items ?? []).map((c) => (
+                    {historyFor(s.id).map((c) => (
                       <li key={c.id} className="border-b border-line pb-2 last:border-0 last:pb-0">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="tabular-nums">{fmtDateTime(c.checked_at)}</span>
@@ -422,7 +480,7 @@ export default function MonitorPage() {
                         <ValueChange oldV={c.old_value} newV={c.new_value} />
                       </li>
                     ))}
-                    {(historyById.get(s.id)?.data?.items ?? []).length === 0 && (
+                    {!historyLoadingFor(s.id) && historyFor(s.id).length === 0 && (
                       <li className="text-ink-faint">No checks recorded yet.</li>
                     )}
                   </ul>

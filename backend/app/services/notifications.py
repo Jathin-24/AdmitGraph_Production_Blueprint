@@ -21,18 +21,18 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
 from app.core.errors import AppError
 from app.core.events import on
 from app.db.models import Notification, ResearchPlan, RunStatus, StudentProfile, User
+from app.db.repositories.notifications import has_recent_notification as notification_exists
 from app.db.session import get_engine
 from app.services.mail import mail_enabled
 from app.services.mail import send_email as deliver_email
@@ -173,20 +173,9 @@ async def has_recent_notification(
     ``days=None`` dedupes forever (used for roadmap reminders); the default
     window is 7 days (stale-source / conflict alerts).
     """
-    stmt = (
-        select(Notification.id)
-        .where(
-            Notification.user_id == user_id,
-            Notification.type == notification_type,
-            Notification.payload[payload_key].astext == str(payload_value),
-        )
-        .limit(1)
+    return await notification_exists(
+        session, user_id, notification_type, payload_key, payload_value, days=days
     )
-    if days is not None:
-        cutoff = datetime.now(UTC) - timedelta(days=days)
-        stmt = stmt.where(Notification.created_at > cutoff)
-    row = (await session.execute(stmt)).scalar_one_or_none()
-    return row is not None
 
 
 # --------------------------------------------------------------------- events

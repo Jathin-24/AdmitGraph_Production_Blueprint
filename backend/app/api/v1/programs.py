@@ -23,11 +23,30 @@ async def list_programs(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     saved_only: bool = False,
+    q: str = Query("", max_length=200),
+    country: str | None = Query(None, max_length=8),
+    degree_level: str | None = Query(None, max_length=64),
+    sort: programs_repo.ProgramSort = Query("fit_score"),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
+    """Catalog listing with the P2-13 filter set (PLAN.md cross-WS contract).
+
+    ``q`` is a literal substring over program / university / city (ILIKE),
+    ``country`` (ISO code) and ``degree_level`` (program degree_type) are
+    case-insensitive exact matches, ``sort`` is fit_score | name | deadline.
+    Response shape is unchanged: {items, total, page, page_size, next_cursor}.
+    """
     profile = await get_or_create_profile(session)
     total, rows = await programs_repo.list_programs(
-        session, profile.id, saved_only, (page - 1) * page_size, page_size
+        session,
+        profile.id,
+        saved_only,
+        (page - 1) * page_size,
+        page_size,
+        q=q,
+        country=country,
+        degree_level=degree_level,
+        sort=sort,
     )
     has_more = page * page_size < total
     return {

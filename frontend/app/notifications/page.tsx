@@ -11,6 +11,7 @@ import {
 } from "../components/ui";
 import { TONE_CHIP, notificationMeta } from "../components/notifications-bell";
 import { listNotifications, markAllNotificationsRead, markNotificationRead } from "../lib/api";
+import { sanitizeHref } from "../lib/api-extra";
 
 export default function NotificationsPage() {
   const queryClient = useQueryClient();
@@ -39,6 +40,12 @@ export default function NotificationsPage() {
       <ul className="flex flex-col divide-y divide-line">
         {list.map((item) => {
           const meta = notificationMeta(item.type);
+          // Backend-provided link: href only for same-origin paths or real
+          // http(s) URLs — anything else renders the notification as text.
+          const href = sanitizeHref(item.link);
+          const markRead = () => {
+            if (!item.read) markOne.mutate(item.id);
+          };
           const body = (
             <>
               <div className="flex flex-wrap items-center gap-2">
@@ -63,16 +70,26 @@ export default function NotificationsPage() {
           return (
             <li key={item.id} className="flex flex-wrap items-start justify-between gap-3 py-3">
               <div className="min-w-0 flex-1">
-                {item.link ? (
-                  <Link
-                    href={item.link}
-                    className="block hover:bg-paper-dark/40"
-                    onClick={() => {
-                      if (!item.read) markOne.mutate(item.id);
-                    }}
-                  >
-                    {body}
-                  </Link>
+                {href ? (
+                  href.startsWith("/") ? (
+                    <Link
+                      href={href}
+                      className="block hover:bg-paper-dark/40"
+                      onClick={markRead}
+                    >
+                      {body}
+                    </Link>
+                  ) : (
+                    <a
+                      href={href}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="block hover:bg-paper-dark/40"
+                      onClick={markRead}
+                    >
+                      {body}
+                    </a>
+                  )
                 ) : (
                   body
                 )}

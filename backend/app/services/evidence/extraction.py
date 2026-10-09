@@ -9,7 +9,6 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
@@ -22,6 +21,7 @@ from app.db.models import (
     SearchRun,
     Source,
 )
+from app.db.repositories import evidence as evidence_repo
 from app.services.evidence.conflicts import _normalize_value
 from app.services.evidence.freshness import freshness_deadline
 
@@ -205,11 +205,7 @@ async def safe_program_subject(
     if title:
         normalized = title.split(" - ")[0].strip().lower()
         if normalized:
-            matches = (
-                (await session.execute(select(Program).where(Program.normalized_name == normalized).limit(2)))
-                .scalars()
-                .all()
-            )
+            matches = await evidence_repo.programs_by_normalized_name(session, normalized)
             if len(matches) == 1:
                 return matches[0].id
     if source is None or not source.domain:
@@ -222,20 +218,8 @@ async def safe_program_subject(
         suffix = ".".join(parts[i:])
         candidates.add(suffix)
         candidates.add("www." + suffix)
-    from app.db.models import Institution
 
-    rows = (
-        (
-            await session.execute(
-                select(Program)
-                .join(Institution, Institution.id == Program.institution_id)
-                .where(Institution.domain.in_(sorted(candidates)))
-                .limit(2)
-            )
-        )
-        .scalars()
-        .all()
-    )
+    rows = await evidence_repo.programs_by_institution_domains(session, sorted(candidates))
     # Several programs behind one domain are ambiguous: leave the claim unbound.
     return rows[0].id if len(rows) == 1 else None
 
@@ -255,25 +239,14 @@ async def load_signal_rows(
     bounded, idempotent pass over rows that already exist; a failed or
     circuit-open run simply has no rows and yields an honest zero.
     """
-    filters: list[Any] = []
-    if purposes:
-        filters.append(SearchRun.parameters["purpose"].astext.in_(purposes))
-    if engines:
-        filters.append(SearchRun.engine.in_(engines))
-    if not filters:
-        return []
-    stmt = (
-        select(SearchResult, Source, SearchRun)
-        .join(SearchRun, SearchResult.search_run_id == SearchRun.id)
-        .join(Source, SearchResult.source_id == Source.id, isouter=True)
-        .where(or_(*filters))
-        .order_by(SearchRun.requested_at.desc(), SearchResult.position.asc().nulls_last())
-        .limit(limit)
+    rows = await evidence_repo.signal_result_rows(
+        session,
+        purposes=purposes,
+        engines=engines,
+        search_run_ids=search_run_ids,
+        limit=limit,
     )
-    if search_run_ids:
-        stmt = stmt.where(SearchRun.id.in_(search_run_ids))
-    rows = (await session.execute(stmt)).all()
-    return [(result, source, run) for result, source, run in rows if source is not None]
+    return [row for row in rows if row[1] is not None]
 
 
 class EvidenceExtractionService:
@@ -350,22 +323,17 @@ class EvidenceExtractionService:
         self, session: AsyncSession, search_result: SearchResult, claim: ExtractedClaim
     ) -> Evidence | None:
         """Existing row for (same search result, same key, same value), if any."""
-        stmt = select(Evidence).where(Evidence.normalized_claim == claim.normalized_key)
-        if search_result.id is None:
-            stmt = stmt.where(Evidence.search_result_id.is_(None))
-        else:
-            stmt = stmt.where(Evidence.search_result_id == search_result.id)
         wanted = _normalize_value(dict(claim.value))
-        for row in (await session.execute(stmt)).scalars().all():
+        candidates = await evidence_repo.reobservation_candidates(
+            session, claim.normalized_key, search_result.id
+        )
+        for row in candidates:
             if _normalize_value(dict(row.extracted_value or {})) == wanted:
                 return row
         return None
 
     async def claims_for_program(self, session: AsyncSession, program_id: UUID) -> list[Evidence]:
-        result = await session.execute(
-            select(Evidence).where(Evidence.subject_type == "program", Evidence.subject_id == program_id)
-        )
-        return list(result.scalars().all())
+        return await evidence_repo.evidence_for_subject(session, "program", program_id)
 
 
 def _quarter_label(value: date) -> str:
@@ -381,12 +349,10 @@ def _quarter_label(value: date) -> str:
 
 async def _country_exists(session: AsyncSession, code: str | None) -> str | None:
     """Return an upper-cased code only when it exists in `countries` (FK-safe)."""
-    from app.db.models import Country
-
     if not code or len(code.strip()) != 2:
         return None
     code = code.strip().upper()
-    found = (await session.execute(select(Country.code).where(Country.code == code))).first()
+    found = await evidence_repo.stored_country_code(session, code)
     return code if found is not None else None
 
 
@@ -453,11 +419,7 @@ async def upsert_intake_from_deadline(
     The label combines a quarter with the run's intake year ("Winter 2027" style);
     it is a cosmetic grouping, not a claim about the program's start date.
     """
-    existing = (
-        await session.execute(
-            select(Intake).where(Intake.program_id == program_id, Intake.intake_year == intake_year)
-        )
-    ).scalars().first()
+    existing = await evidence_repo.intake_for_program_year(session, program_id, intake_year)
     label = f"{_quarter_label(deadline)} {intake_year}"
     if existing is not None:
         existing.application_deadline = deadline

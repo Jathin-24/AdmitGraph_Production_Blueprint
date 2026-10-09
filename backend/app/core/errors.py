@@ -1,9 +1,14 @@
+import logging
 import uuid
 from typing import Any
 
 from fastapi import HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+
+from app.core.runcontext import request_id_scope
+
+log = logging.getLogger(__name__)
 
 
 class AppError(HTTPException):
@@ -37,10 +42,32 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 
 
 async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
-    return JSONResponse(
+    """Render an unexpected exception as a correlated 500 (audit P2-27).
+
+    Two things must happen here, because ServerErrorMiddleware invokes this
+    handler AFTER the exception has unwound the request-id middleware scope:
+
+    * re-enter the ``request_id`` scope so the traceback log line carries the
+      same id the client will see (``logging.exception`` picks up the live
+      exception being handled), and
+    * stamp ``X-Request-ID`` on the response itself — the middleware that
+      normally sets it never sees a response that was produced by the
+      server-error path.
+    """
+    request_id = getattr(request.state, "request_id", "") or ""
+    with request_id_scope(request_id):
+        log.exception(
+            "unhandled error: %s %s returned 500",
+            request.method,
+            request.url.path,
+        )
+    response = JSONResponse(
         status_code=500,
-        content=error_payload("INTERNAL_ERROR", "Unexpected server error", {}, request.state.request_id),
+        content=error_payload("INTERNAL_ERROR", "Unexpected server error", {}, request_id),
     )
+    if request_id:
+        response.headers["X-Request-ID"] = request_id
+    return response
 
 
 def new_request_id() -> str:

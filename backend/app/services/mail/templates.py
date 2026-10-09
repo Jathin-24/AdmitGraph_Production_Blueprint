@@ -1,26 +1,43 @@
 """Email templates: simple inline-HTML (no external assets) + plain text.
 
 Brand: background #FAF9F5, accent #1D5C46, text #16181D. Every template has a
-CTA to the local frontend (http://localhost:3000{link}) and the honest footer
-about what AdmitGraph data means. All templates return ``(subject, html, text)``.
+CTA to the frontend ({frontend_url}{link}, settings.frontend_url — the same
+base auth.py uses for reset/verify links) and the honest footer about what
+AdmitGraph data means. All templates return ``(subject, html, text)``.
 """
 
 from __future__ import annotations
 
-FRONTEND_BASE = "http://localhost:3000"
+from app.core.config import get_settings
+
+# Only used when settings.frontend_url is unset/blank (the default dev config
+# already supplies http://localhost:3000) — never in a real deployment.
+LOCAL_FRONTEND_BASE = "http://localhost:3000"
 FOOTER = "AdmitGraph — data from cited sources; fit is not an admission probability."
 BRAND_BG = "#FAF9F5"
 BRAND_ACCENT = "#1D5C46"
 BRAND_TEXT = "#16181D"
 
 
+def frontend_base() -> str:
+    """Frontend origin for email CTAs (audit D-7).
+
+    Reads ``get_settings().frontend_url`` — the deployment's FRONTEND_URL, the
+    same setting ``api/v1/auth.py`` builds reset/verify links from — so every
+    email link points at the real frontend in production. A localhost
+    fallback applies only when the setting is unset/blank.
+    """
+    base = (get_settings().frontend_url or "").strip().rstrip("/")
+    return base or LOCAL_FRONTEND_BASE
+
+
 def absolute_url(link: str) -> str:
-    """CTA href: local frontend base + in-app route (or an absolute URL as-is)."""
+    """CTA href: configured frontend base + in-app route (or an absolute URL as-is)."""
     if link.startswith("http://") or link.startswith("https://"):
         return link
     if not link.startswith("/"):
         link = "/" + link
-    return f"{FRONTEND_BASE}{link}"
+    return f"{frontend_base()}{link}"
 
 
 def _render(heading: str, paragraphs: list[str], cta_label: str, cta_url: str) -> tuple[str, str]:
@@ -133,5 +150,44 @@ def roadmap_due_email(user_name: str, link: str, headline: str) -> tuple[str, st
         [f"Hi {user_name},", headline.strip() or "One of your roadmap tasks is coming due."],
         "Open dashboard",
         absolute_url(link),
+    )
+    return subject, html, text
+
+
+def password_reset_email(user_name: str, reset_url: str) -> tuple[str, str, str]:
+    """P2-14 — password reset link (single-use, expires in 30 minutes).
+
+    ``reset_url`` is already absolute ({frontend_url}/reset-password?token=...).
+    """
+    subject = "Reset your AdmitGraph password"
+    html, text = _render(
+        "Reset your password",
+        [
+            f"Hi {user_name},",
+            "We received a request to reset the password for your AdmitGraph account. "
+            "Choose a new password with the button below.",
+            "The link can only be used once and expires in 30 minutes. If you did not "
+            "request this, you can ignore this email — your password stays unchanged.",
+        ],
+        "Choose a new password",
+        reset_url,
+    )
+    return subject, html, text
+
+
+def email_verify_email(user_name: str, verify_url: str) -> tuple[str, str, str]:
+    """P2-14 — email verification link (single-use, expires in 30 minutes)."""
+    subject = "Verify your AdmitGraph email address"
+    html, text = _render(
+        "Verify your email address",
+        [
+            f"Hi {user_name},",
+            "Confirm that this address reaches you so AdmitGraph can send you "
+            "research, deadline and roadmap updates.",
+            "The link can only be used once and expires in 30 minutes. If you did not "
+            "request this, you can ignore this email.",
+        ],
+        "Verify my email",
+        verify_url,
     )
     return subject, html, text

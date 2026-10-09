@@ -6,6 +6,8 @@ current claim for the same subject -> compare normalized values ->
 - different value: store a NEW evidence row (old evidence is never overwritten)
   and run conflict detection (both rows become CONFLICTING if they differ)
 - no provider key: AppError 409 PROVIDER_UNAVAILABLE (no silent fake data)
+- too many rechecks by the same caller: AppError 429 RATE_LIMITED (P1-10
+  cooldown, only when the API passes rate_key)
 
 Every provider request is recorded in `search_runs` (serpapi_docs rule 5).
 """
@@ -13,11 +15,11 @@ Every provider request is recorded in `search_runs` (serpapi_docs rule 5).
 from __future__ import annotations
 
 import logging
+import time
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
@@ -31,6 +33,8 @@ from app.db.models import (
     SearchRun,
     Source,
 )
+from app.db.repositories import evidence as evidence_repo
+from app.db.repositories.programs import get_program_by_id
 from app.services.evidence.conflicts import ConflictDetectionService, _normalize_value
 from app.services.evidence.extraction import EvidenceExtractionService, ExtractedClaim
 from app.services.evidence.freshness import freshness_deadline
@@ -43,6 +47,39 @@ from app.services.serpapi.client import SerpApiClient, SerpApiError
 logger = logging.getLogger(__name__)
 
 MAX_RECHECK_RESULTS = 3
+
+# P1-10: per-caller cooldown for the on-demand recheck (a recheck costs a real
+# provider search). Sliding window: at most RECHECK_MAX_PER_WINDOW calls per
+# RECHECK_WINDOW_SECONDS and per rate_key. Direct service callers (workers,
+# tests) pass rate_key=None and bypass the cooldown entirely.
+RECHECK_WINDOW_SECONDS = 60
+RECHECK_MAX_PER_WINDOW = 5
+_RECHECK_HITS: dict[str, list[float]] = {}
+
+
+def reset_recheck_cooldown(rate_key: str | None = None) -> None:
+    """Drop the sliding window for one caller (or all, for tests/fixtures)."""
+    if rate_key is None:
+        _RECHECK_HITS.clear()
+    else:
+        _RECHECK_HITS.pop(rate_key, None)
+
+
+def _recheck_retry_after(rate_key: str) -> float:
+    """Seconds until this caller may recheck again (0 = allowed now).
+
+    Prunes stale hits as a side effect so the window stays bounded.
+    """
+    now = time.monotonic()
+    hits = [t for t in _RECHECK_HITS.get(rate_key, []) if now - t < RECHECK_WINDOW_SECONDS]
+    _RECHECK_HITS[rate_key] = hits
+    if len(hits) < RECHECK_MAX_PER_WINDOW:
+        return 0.0
+    return max(0.0, RECHECK_WINDOW_SECONDS - (now - hits[0]))
+
+
+def _record_recheck_hit(rate_key: str) -> None:
+    _RECHECK_HITS.setdefault(rate_key, []).append(time.monotonic())
 
 
 def _recheck_query(evidence: Evidence, program: Program | None) -> str:
@@ -60,9 +97,7 @@ async def _upsert_source(session: AsyncSession, url: str, title: str | None) -> 
     parsed = urlparse(url)
     domain = (parsed.netloc or "").lower()
     canonical = url.split("#")[0]
-    existing = (
-        await session.execute(select(Source).where(Source.canonical_url == canonical))
-    ).scalar_one_or_none()
+    existing = await evidence_repo.source_by_canonical_url(session, canonical)
     if existing is not None:
         existing.last_seen_at = datetime.now(UTC)
         return existing
@@ -85,12 +120,27 @@ async def recheck_evidence(
     *,
     settings: Settings | None = None,
     serpapi: Any | None = None,
+    rate_key: str | None = None,
 ) -> dict[str, Any]:
-    """Re-check one claim with one bounded fresh search. Returns the updated item."""
+    """Re-check one claim with one bounded fresh search. Returns the updated item.
+
+    Error order (P1-10): 404 unknown evidence -> 429 per-caller cooldown ->
+    409 provider unavailable. ``rate_key`` is the API's caller identity;
+    ``None`` skips the cooldown (workers / direct service calls).
+    """
     settings = settings or get_settings()
-    evidence = await session.get(Evidence, evidence_id)
+    evidence = await evidence_repo.get_evidence(session, evidence_id)
     if evidence is None:
         raise AppError(404, "NOT_FOUND", "Evidence not found")
+    if rate_key is not None:
+        retry_after = _recheck_retry_after(rate_key)
+        if retry_after > 0:
+            raise AppError(
+                429,
+                "RATE_LIMITED",
+                f"Too many rechecks — try again in {int(retry_after) + 1} seconds",
+            )
+        _record_recheck_hit(rate_key)
     if not settings.serpapi_api_key and serpapi is None:
         raise AppError(
             409, "PROVIDER_UNAVAILABLE", "Provider unavailable — configure SERPAPI_API_KEY"
@@ -98,7 +148,7 @@ async def recheck_evidence(
 
     program: Program | None = None
     if evidence.subject_type == "program" and evidence.subject_id is not None:
-        program = await session.get(Program, evidence.subject_id)
+        program = await get_program_by_id(session, evidence.subject_id)
 
     client = serpapi or SerpApiClient(settings, cache=SearchCache(settings))
     query = _recheck_query(evidence, program)

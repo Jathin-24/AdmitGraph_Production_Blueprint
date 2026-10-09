@@ -1,4 +1,14 @@
+import type { Metadata } from "next";
 import Link from "next/link";
+
+/** P2-20 per-route metadata. The landing page is a server component (only
+ *  Links — no client interactivity), so this exports statically and the
+ *  description below is what search engines and link previews show. */
+export const metadata: Metadata = {
+  title: "Evidence-based study-abroad planning",
+  description:
+    "AdmitGraph checks live requirements, costs, deadlines and risks against your profile — then tells you what to do next. Fit, never admission probabilities; every claim sourced.",
+};
 
 const STEPS = [
   {

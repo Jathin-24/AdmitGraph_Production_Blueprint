@@ -3,8 +3,11 @@
 Idempotent: safe to re-run — it fills only what is missing, never overwrites
 existing values, and duplicates nothing. Covers the MASTER_SPEC §18 persona
 (B.Tech CSE, CGPA 8.1/10, IELTS 7.5, one 12-month internship, ₹18,00,000 INR
-budget, Germany, MSc AI, Winter 2027), the ADMIN role used by admin endpoints,
-and one clearly-labeled demo evidence fixture.
+budget, Germany, MSc AI, Winter 2027), one clearly-labeled demo evidence
+fixture, and a demo user seeded STUDENT (P0-2: a shared admin-capable demo
+account is how anonymous callers used to reach /admin/*).
+
+Local admin exploration is opt-in via `python -m scripts.grant_demo_admin`.
 
 Run: python -m scripts.seed_demo   (database must be migrated)
 """
@@ -60,8 +63,11 @@ async def main() -> None:
             session.add(user)
             await session.flush()
 
-        # Admin endpoints gate on the ADMIN role: assert it every run.
-        user.role = UserRole.ADMIN
+        # P0-2: the shared demo account is STUDENT, asserted every run (the
+        # old seeding promoted it to ADMIN, so anonymous traffic inherited an
+        # admin-capable row). Grant admin locally on purpose instead:
+        # python -m scripts.grant_demo_admin.
+        user.role = UserRole.STUDENT
 
         result = await session.execute(
             select(StudentProfile).where(StudentProfile.user_id == user.id)
@@ -123,7 +129,7 @@ async def main() -> None:
         await session.commit()
         print(
             f"Demo user {'created' if fresh_user else 'updated'} "
-            f"({PERSONA_LABEL}); role=ADMIN, persona + scores + internship ensured."
+            f"({PERSONA_LABEL}); role=STUDENT, persona + scores + internship ensured."
         )
 
 

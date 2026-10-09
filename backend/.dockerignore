@@ -1,0 +1,46 @@
+# Keep secrets and local state out of the image (audit P0-4 / PLAN P0-4).
+# The Dockerfile copies app/, alembic/, scripts/, pyproject.toml and
+# alembic.ini explicitly; this file is the second line of defence so a future
+# `COPY . .` can never bake credentials, virtualenvs or run artefacts again.
+
+# --- secrets / local configuration ---
+.env
+.env.*
+*.env
+
+# --- virtualenvs & build artefacts ---
+.venv
+venv
+env
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- test/lint caches ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- runtime state (uploads, mail outbox, persisted dev secret) ---
+var/
+
+# --- logs ---
+*.log
+uvicorn*.log
+logs/
+
+# --- local scratch / junk files at the backend root ---
+x
+answers.json
+profile.json
+
+# --- not needed inside the image ---
+tests/
+.git/
+.gitignore
+BACKEND_SPEC.md

@@ -1,23 +1,41 @@
 import {
   authResponseSchema,
+  evidenceListSchema,
   fitResponseSchema,
   meResponseSchema,
   monitorCheckSchema,
   notificationsResponseSchema,
+  onboardingSchemaResponse,
   parseWith,
-  portfolioListSchema,
+  programListSchema,
+  profileSchema,
   researchEventsSchema,
   researchRunOutSchema,
   researchRunSchema,
-  riskListSchema,
   strategiesListSchema,
   strategyDetailSchema,
   subscriptionChangesSchema,
   subscriptionsListSchema,
   type LooseParser,
+  type OnboardingStep,
 } from "./schemas";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1";
+/** Fallback for local development only. `NEXT_PUBLIC_API_BASE_URL` is inlined
+ *  at BUILD time — an unset variable in a production build means every query
+ *  would silently hit localhost, so `checkApiHealth()` + <ApiHealthBanner />
+ *  surface that misconfiguration instead of "Cannot reach the server". */
+const FALLBACK_API_BASE = "http://localhost:8000/api/v1";
+
+if (!process.env.NEXT_PUBLIC_API_BASE_URL && process.env.NODE_ENV !== "production") {
+  // One-time dev warning (module scope — evaluated once per session).
+  console.warn(
+    `[api] NEXT_PUBLIC_API_BASE_URL is not set — using the local fallback ${FALLBACK_API_BASE}. ` +
+      "Set it before building for a real deployment."
+  );
+}
+
+/** Base URL every request goes through. W5's api-extra.ts imports this. */
+export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? FALLBACK_API_BASE;
 
 export const TOKEN_KEY = "admitgraph_token";
 
@@ -103,15 +121,26 @@ export interface ResearchEvents {
   steps: ResearchStep[];
 }
 
-async function apiFetch<T>(
+/** Authenticated JSON client — W5 imports this from api.ts (PLAN.md
+ *  cross-WS contract). Every request carries the stored bearer token; never
+ *  call bare `fetch()` for API reads or a signed-in user silently reads the
+ *  anonymous demo profile (P0-3). */
+export async function apiFetch<T>(
   path: string,
   init?: RequestInit,
   parser?: LooseParser<T>
 ): Promise<T> {
   const hadToken = getToken() !== null;
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...authHeaders(), ...(init?.headers ?? {}) },
     ...init,
+    // Merge instead of letting `...init` replace the whole headers object:
+    // defaults < caller headers < auth, so passing init.headers can no
+    // longer drop the Authorization header, and the auth token always wins.
+    headers: {
+      "Content-Type": "application/json",
+      ...(init?.headers ?? {}),
+      ...authHeaders(),
+    },
   });
   if (!res.ok) {
     let code: string | null = null;
@@ -134,9 +163,29 @@ async function apiFetch<T>(
     throw new ApiError(message, res.status, code);
   }
   const json: unknown = await res.json();
-  // `parser` was already checked against T at the call site — parse here so a
-  // schema mismatch degrades to the raw payload instead of throwing.
-  return parser ? (parseWith(json, parser) as T) : (json as T);
+  // Strict parsers (collections pages `.map()` over) throw a typed
+  // ParseError into react-query's error path on mismatch; lenient parsers
+  // degrade to the raw payload with a dev warning. See schemas.ts header.
+  return parser ? parseWith(json, parser) : (json as T);
+}
+
+/* --------------------------------------------------------------- health */
+
+/** Lightweight startup self-check: GET {API_BASE}/health. Returns the HTTP
+ *  status, or null when nothing answered (unreachable / CORS / wrong base).
+ *  A non-2xx answer with a real response usually means API_BASE points at
+ *  the wrong server — both cases feed <ApiHealthBanner />. */
+export async function checkApiHealth(timeoutMs = 5000): Promise<number | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${API_BASE}/health`, { cache: "no-store", signal: controller.signal });
+    return res.status;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /* ------------------------------------------------------------------ auth */
@@ -439,24 +488,6 @@ export function getStrategy(strategyId: string): Promise<StrategyDetail> {
   return apiFetch<StrategyDetail>(`/strategies/${strategyId}`, undefined, strategyDetailSchema);
 }
 
-/** Fresh portfolio rows for one strategy (same rows as getStrategy().portfolio). */
-export function getPortfolio(strategyId: string): Promise<{ items: PortfolioRow[] }> {
-  return apiFetch<{ items: PortfolioRow[] }>(
-    `/strategies/${strategyId}/portfolio`,
-    undefined,
-    portfolioListSchema
-  );
-}
-
-/** Fresh risk rows for one strategy (same rows as getStrategy().risks). */
-export function listRisks(strategyId: string): Promise<{ items: StrategyRisk[] }> {
-  return apiFetch<{ items: StrategyRisk[] }>(
-    `/strategies/${strategyId}/risks`,
-    undefined,
-    riskListSchema
-  );
-}
-
 /** Move a risk to ACKNOWLEDGED / RESOLVED / DISMISSED (OPEN is never a target). */
 export function updateRisk(
   strategyId: string,
@@ -477,8 +508,14 @@ export function getFit(strategyId: string): Promise<{ scoring_version: string; i
   );
 }
 
+/** Evidence rows (optionally scoped to one program). The `items` collection
+ *  is parsed strictly — the evidence drawers `.map()` it (schemas.ts rule 1). */
 export function listEvidence(programId?: string): Promise<{ items: EvidenceItem[] }> {
-  return apiFetch(programId ? `/evidence?program_id=${programId}` : "/evidence");
+  return apiFetch<{ items: EvidenceItem[] }>(
+    programId ? `/evidence?program_id=${programId}` : "/evidence",
+    undefined,
+    evidenceListSchema
+  );
 }
 
 export interface PortfolioMove {
@@ -515,13 +552,55 @@ export function simulateStrategy(
   });
 }
 
+/** GET /programs query params (PLAN.md cross-WS contract with W3):
+ *  `q` substring over program/university/city, `country` and `degree_level`
+ *  exact matches, `sort` one of fit_score|name|deadline, plus the paging
+ *  basics. All optional — absent/empty values are simply omitted. */
+export type ProgramSort = "fit_score" | "name" | "deadline";
+
+export interface ProgramListParams {
+  page?: number;
+  page_size?: number;
+  saved_only?: boolean;
+  q?: string;
+  country?: string;
+  degree_level?: string;
+  sort?: ProgramSort;
+}
+
+export interface ProgramListResponse {
+  items: ProgramListItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export function listPrograms(params: ProgramListParams): Promise<ProgramListResponse>;
+/** Positional form kept for existing call sites (dashboard/monitor/programs). */
 export function listPrograms(
-  page = 1,
-  pageSize = 20,
-  savedOnly = false
-): Promise<{ items: ProgramListItem[]; page: number; page_size: number; total: number; next_cursor: string | null }> {
-  const saved = savedOnly ? "&saved_only=true" : "";
-  return apiFetch(`/programs?page=${page}&page_size=${pageSize}${saved}`);
+  page?: number,
+  pageSize?: number,
+  savedOnly?: boolean
+): Promise<ProgramListResponse>;
+export function listPrograms(
+  pageOrParams: number | ProgramListParams = 1,
+  pageSize?: number,
+  savedOnly?: boolean
+): Promise<ProgramListResponse> {
+  const params: ProgramListParams =
+    typeof pageOrParams === "object"
+      ? pageOrParams
+      : { page: pageOrParams, page_size: pageSize, saved_only: savedOnly };
+  const query = new URLSearchParams();
+  if (params.page && params.page !== 1) query.set("page", String(params.page));
+  if (params.page_size && params.page_size !== 20) query.set("page_size", String(params.page_size));
+  if (params.saved_only) query.set("saved_only", "true");
+  if (params.q) query.set("q", params.q);
+  if (params.country) query.set("country", params.country);
+  if (params.degree_level) query.set("degree_level", params.degree_level);
+  if (params.sort && params.sort !== "fit_score") query.set("sort", params.sort);
+  const qs = query.toString();
+  return apiFetch<ProgramListResponse>(`/programs${qs ? `?${qs}` : ""}`, undefined, programListSchema);
 }
 
 export function getProgram(programId: string): Promise<ProgramDetail> {
@@ -541,7 +620,7 @@ export function unsaveProgram(programId: string): Promise<{ saved: boolean }> {
 }
 
 export function getProfile(): Promise<ProfileOut> {
-  return apiFetch("/me/profile");
+  return apiFetch<ProfileOut>("/me/profile", undefined, profileSchema);
 }
 
 export function getCompletion(): Promise<CompletionOut> {
@@ -637,6 +716,17 @@ export interface OnboardingProgress {
 
 export function getOnboardingProgress(): Promise<OnboardingProgress> {
   return apiFetch("/onboarding/progress");
+}
+
+/** Guided-setup schema (GET /onboarding/schema) — routed through the
+ *  authenticated client so a signed-in wizard is never prefilled from the
+ *  anonymous demo profile (P0-3). */
+export function getOnboardingSchema(): Promise<{ steps: OnboardingStep[] }> {
+  return apiFetch<{ steps: OnboardingStep[] }>(
+    "/onboarding/schema",
+    undefined,
+    onboardingSchemaResponse
+  );
 }
 
 /** Answers may carry structured values (e.g. `subjects: [{name, credits}]`,

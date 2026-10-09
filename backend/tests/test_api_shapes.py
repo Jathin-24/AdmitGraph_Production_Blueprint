@@ -560,6 +560,8 @@ async def test_conflict_resolve_response_shape(env: dict[str, Any]) -> None:
     response = await api.post(
         f"/api/v1/evidence/conflicts/{env['conflict_id']}/resolve",
         json={"reason": "Official source wins"},
+        # P1-10: conflicts attached to a profile are 404 for anyone but the owner.
+        headers=_auth(env["owner_token"]),
     )
     assert response.status_code == 200, response.text
     body = response.json()
