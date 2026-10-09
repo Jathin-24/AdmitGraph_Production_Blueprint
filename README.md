@@ -58,6 +58,24 @@ What is implemented today (verified in `backend/app`, `frontend/app`):
 - **Documents + file uploads** — document records with a file endpoint
   (`POST /documents/{id}/upload` → `GET /documents/{id}/file`), 413 on oversized
   bodies, 422 on validation failures.
+- **Application tracker** — `GET/POST/PATCH/DELETE /api/v1/applications` for the
+  student's own rows (status enum `draft | submitted | interview | offer |
+  rejected | waitlist | withdrawn`, partial `PATCH`, `{id, deleted}` delete) with
+  404-not-403 scoping proven by tests; the `/applications` page groups rows by
+  status with per-status counts, an add form, inline status updates and
+  two-step delete confirmation.
+- **Scholarship finder** — `GET /api/v1/scholarships` (`q`, `country`,
+  `degree_level`, `funding_type` filters, `GET /programs`-shaped paging) over a
+  verified JSON reference dataset: 11 real scholarships where every row carries
+  a real `source_url` fetched on its `last_checked` date (2026-10-09); the
+  `/scholarships` page renders filterable cards plus the "re-check figures at
+  source" disclaimer.
+- **Visa & funding checklist** — `/visa` walks six destinations (DE, NL, US,
+  UK, CA, AU) through typical student-visa steps, financial-proof expectations
+  and a per-country document checklist persisted in localStorage — every block
+  citing an official source (immigration authority or embassy) with a
+  "verify at source" banner and last-checked date; numeric figures appear only
+  where the source states them.
 - **Strategy** — persisted fit dimensions and explainable scoring, risks with
   acknowledge/resolve/dismiss transitions, application portfolio cards (fit score,
   top-2 reasons, worst open risk, cost band, evidence freshness, next
@@ -97,15 +115,59 @@ What is implemented today (verified in `backend/app`, `frontend/app`):
   the captured run in seconds; explore, notifications and program detail offer
   empty-state "Run the full example" CTAs and dashboard/landing offer "See a
   live example first", all of which link to `/research` to start it.
+- **Wider demo catalog** — the captured fixture now replays **11 real master's
+  programs at 9 institutions across 3 countries** (DE 4, NL 5, US 2); every
+  fact was re-read on the program's official page during capture and anything
+  unsubstantiated stays `null` (deadline/tuition on most rows).
 
-Backend test suite: **580 tests** (unit, contract, and DB integration), **91 %
-  line coverage** of `backend/app`. Frontend: **30 tests** (Vitest + Testing
+Backend test suite: **614 tests** (unit, contract, and DB integration), **91 %
+  line coverage** of `backend/app`. Frontend: **74 tests** (Vitest + Testing
   Library — API helpers, zod schemas, nav/filters components, retry policy,
-  source-scan and OpenAPI-contract checks).
+  application-tracker grouping, scholarship query helpers, visa
+  dataset/localStorage checks, source-scan and OpenAPI-contract checks).
 
 Derived artefacts are checked for staleness in CI: `database/schema.sql`
 (Alembic), `api/openapi.json` (FastAPI) and
 `frontend/app/lib/api-types.generated.ts` (`npm run gen:api-types`).
+
+## Material SerpApi usage
+
+SerpApi is the product's live discovery and verification layer — three
+load-bearing call paths depend on it:
+
+1. **Research discovery** (`backend/app/services/research/runner.py`) — builds
+   site-scoped, per-profile queries (localized `hl`/`gl`/`location`) against
+   SerpApi's **Google Search** engine (`engine=google`) to discover programs
+   and collect evidence (deadlines, tuition, admission and language
+   requirements) from official university/government pages, plus **Google
+   Jobs** (`engine=google_jobs`) for post-study career signal and **Google
+   News** (`engine=google_news`) for visa/policy news affecting applicants.
+2. **Monitoring re-checks** (`backend/app/services/monitoring/service.py`) —
+   the same typed client re-verifies tracked fields when a subscription check
+   runs.
+3. **Evidence recheck** (`backend/app/services/evidence/recheck.py`) — a
+   bounded on-demand refresh; with no API key configured it fails honestly
+   with `409 PROVIDER_UNAVAILABLE` instead of fabricating a refresh.
+
+Why the data matters: universities change deadlines, fees and requirements
+constantly. Fresh SerpApi results are normalized into evidence-backed claims
+(no evidence id → the claim is rejected — the pipeline never invents a fact),
+and those claims drive program fit, risk analysis, monitoring materiality and
+the student's application roadmap.
+
+Governance (the 16-rule contract in `serpapi_docs/SERPAPI_INTEGRATION.md`,
+enforced where it matters): every request is ledgered in `search_runs` with
+the provider's `search_id`, cached in Redis for 6 hours, capped at ≤6
+discovery searches per run, concurrency-limited with a circuit breaker, and
+bounded by a daily search budget counted from `search_runs`
+(`AGRAPH_DAILY_SEARCH_BUDGET`, default 500/day → `429 BUDGET_EXCEEDED`).
+
+Live usage in this repository as of 2026-10-09: **18 successful live research
+runs and 189 ledgered SerpApi searches** across `google`/`google_jobs`/
+`google_news` (169 rows carry provider search ids) — inspect live totals at
+`/admin/search-usage` and `/admin/research-runs` (ADMIN-gated). Demo mode
+replays a captured real SerpApi session (`POST /research/demo`), labeled as a
+replay, so anyone can run the full flow with zero credits.
 
 ## Repository
 See:
@@ -160,14 +222,14 @@ automatically and skip when Postgres is down. Override that scratch URL with
 ## URLs
 - App: http://localhost:3000
 - API: http://localhost:8000/api/v1 — Swagger: http://localhost:8000/api/v1/docs — spec: http://localhost:8000/api/v1/openapi.json (committed copy: `api/openapi.json`)
-- Main pages: `/` (landing), `/dashboard`, `/explore`, `/research`, `/monitor`, `/notifications`, `/profile`, `/onboarding`, `/programs/[id]` (detail), `/admin`
+- Main pages: `/` (landing), `/dashboard`, `/explore`, `/research`, `/monitor`, `/notifications`, `/profile`, `/onboarding`, `/programs/[id]` (detail), `/applications`, `/scholarships`, `/visa`, `/admin`
 - Accounts: register/login at `/register` + `/login` (email + password). Anonymous visitors use the local demo session (`demo@admitgraph.local`, STUDENT — it cannot reach `/admin`). Password recovery: `/forgot-password` → `/reset-password`. Emails in `ADMIN_EMAILS` become admins on registration; an admin account is required for the `/admin` UI.
 - Instant demo: research page → "Run the full example" (replays a captured real run; no SerpApi/LLM credits).
 - Metrics (Prometheus text): http://localhost:8000/metrics
 
 ## Checks
 ```bash
-# Backend — ruff, mypy, then the suite (580 tests, 91% app coverage; DB-backed
+# Backend — ruff, mypy, then the suite (614 tests, 91% app coverage; DB-backed
 # tests provision their own scratch DB and skip when Postgres is down)
 cd backend && ruff check app tests scripts && mypy app && pytest -q
 # One-off coverage report (not enforced as a threshold in CI):

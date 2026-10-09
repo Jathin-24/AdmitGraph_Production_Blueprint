@@ -1,0 +1,153 @@
+{
+  "_meta": {
+    "last_checked": "2026-10-09",
+    "verification": "Each source_url was fetched (HTTP 200) on 2026-10-09 and the facts in this file were read off that page. Nothing here is model memory: a scholarship we could not open and read is not in this file.",
+    "note": "Amounts and deadlines change between application cycles — re-verify every figure at source_url before you rely on it. A null deadline means the provider publishes no single date (each institution, course or commission sets its own); a null amount or country means the source page did not state one.",
+    "funding_type_note": "funding_type is a coarse filter label (full | partial | merit | need-based) derived from the coverage each provider states on its own page; amount_text carries the sourced wording and figures, and is the field to trust."
+  },
+  "scholarships": [
+    {
+      "id": "daad-epos-development-related-postgraduate-courses",
+      "name": "DAAD EPOS: Development-Related Postgraduate Courses",
+      "provider": "German Academic Exchange Service (DAAD)",
+      "country": "DE",
+      "degree_levels": ["masters", "phd"],
+      "funding_type": "full",
+      "amount_text": "€992 per month for graduates or €1,300 per month for doctoral candidates (€1,400 from February 2026), plus payments towards health, accident and personal liability insurance and a travel allowance; funding runs 12 to 42 months depending on the study programme.",
+      "deadline": null,
+      "eligibility": "Graduates from development and newly industrialised countries with at least two years of professional experience and a Bachelor's degree (normally a four-year course) in a related subject can apply. Applications go directly to the individual postgraduate course and each course sets its own deadline — the DAAD list shows application deadlines for 2027/2028.",
+      "source_url": "https://www2.daad.de/deutschland/stipendium/datenbank/en/21148-scholarship-database/?detail=50076777",
+      "details_url": null
+    },
+    {
+      "id": "deutschlandstipendium",
+      "name": "Deutschlandstipendium",
+      "provider": "German universities with private sponsors (federal programme, BMFTR)",
+      "country": "DE",
+      "degree_levels": ["bachelors", "masters"],
+      "funding_type": "merit",
+      "amount_text": "€300 per month — €150 pledged by a private sponsor (business, foundation or individual) and matched with €150 by the Federal Government. Funding is normally granted for at least two semesters and may cover the standard period of study.",
+      "deadline": null,
+      "eligibility": "Talented and high-achieving students at public and state-recognised universities in Germany can apply: first- and higher-semester students of all nationalities apply directly to their own university. Universities select recipients on academic achievement plus social commitment and personal achievement, and the award is made without consideration of personal or parental income.",
+      "source_url": "https://www.deutschlandstipendium.de/deutschlandstipendium/de/services/english/english_node.html",
+      "details_url": null
+    },
+    {
+      "id": "erasmus-mundus-joint-masters",
+      "name": "Erasmus Mundus Joint Master's Scholarships",
+      "provider": "European Commission (Erasmus+)",
+      "country": null,
+      "degree_levels": ["masters"],
+      "funding_type": "full",
+      "amount_text": "Full scholarships are available for the best-ranked students worldwide and cover participation costs plus contributions to travel, visa and a living allowance. The programme runs 1 to 2 academic years (60, 90 or 120 ECTS credits).",
+      "deadline": null,
+      "eligibility": "Students from all over the world with a bachelor's degree — or in the final year of a bachelor's, graduating before the master's starts — may apply; a bachelor's-equivalent level of learning can also qualify. You apply directly to the institution running the chosen programme, in most cases between October and January for courses starting the following academic year.",
+      "source_url": "https://erasmus-plus.ec.europa.eu/opportunities/individuals/students/erasmus-mundus-joint-masters",
+      "details_url": null
+    },
+    {
+      "id": "nl-scholarship",
+      "name": "NL Scholarship (formerly Holland Scholarship)",
+      "provider": "Dutch Ministry of Education, Culture and Science with participating Dutch research universities and universities of applied sciences",
+      "country": "NL",
+      "degree_levels": ["bachelors", "masters"],
+      "funding_type": "partial",
+      "amount_text": "€5,000, received in the first year of studies. The official page states explicitly that this is not a full-tuition scholarship.",
+      "deadline": null,
+      "eligibility": "International students from outside the European Economic Area applying for a full-time bachelor's or master's programme at one of the participating Dutch institutions, who do not already hold a degree from a Dutch institution. Each institution publishes its own closing date and fields of study for the academic year (the 2026-2027 application opened on 1 November 2025).",
+      "source_url": "https://www.studyinnl.org/finances/nl-scholarship",
+      "details_url": null
+    },
+    {
+      "id": "chevening-scholarships",
+      "name": "Chevening Scholarships",
+      "provider": "UK Government — supported by the Foreign, Commonwealth and Development Office (FCDO) and partner organisations",
+      "country": "GB",
+      "degree_levels": ["masters"],
+      "funding_type": "full",
+      "amount_text": "Fully funded one-year master's study at a UK university — Chevening describes its scholarships as fully funded, so you can focus on the course instead of funding it.",
+      "deadline": null,
+      "eligibility": "Outstanding emerging leaders from Chevening's participating countries who want to pursue a one-year master's degree in the UK; you apply for your own country or territory's award. Applicants need at least 2,800 hours of work experience gained after completing their undergraduate degree — roughly two years of full-time work.",
+      "source_url": "https://www.chevening.org/scholarships/",
+      "details_url": "https://www.chevening.org/scholarships/work-experience/"
+    },
+    {
+      "id": "fulbright-foreign-student-program",
+      "name": "Fulbright Foreign Student Program",
+      "provider": "U.S. Department of State, administered by the Institute of International Education (IIE)",
+      "country": "US",
+      "degree_levels": ["masters", "phd"],
+      "funding_type": "full",
+      "amount_text": "Funded by the U.S. Government: graduate study and research in the United States for around 4,000 foreign students a year. Award value and components are set country by country — eligibility and selection procedures vary widely, so check your national commission or embassy for the exact package.",
+      "deadline": null,
+      "eligibility": "Graduate students, young professionals and artists from abroad who want to study and conduct research in the United States. The application and selection process is run by the binational Fulbright commission or foundation, or the U.S. embassy, in your home country — and if your country is not in the official list you cannot apply.",
+      "source_url": "https://foreign.fulbrightonline.org/about/foreign-student-program",
+      "details_url": null
+    },
+    {
+      "id": "si-scholarship-global-professionals",
+      "name": "SI Scholarship for Global Professionals",
+      "provider": "Swedish Institute",
+      "country": "SE",
+      "degree_levels": ["masters"],
+      "funding_type": "full",
+      "amount_text": "Fully funded: full tuition fee coverage paid directly by SI to the university each semester, a monthly allowance of SEK 12,000 for living expenses, and a one-time travel grant of SEK 15,000 (SEK 10,000 for scholars from Armenia, Azerbaijan, Belarus, Georgia, Moldova and Ukraine). It does not include insurance, family allowances or the University Admissions application fee.",
+      "deadline": null,
+      "eligibility": "Citizens of the scholarship's 34 eligible countries who are liable to pay tuition fees and are admitted to an eligible English-taught master's programme on the admissions announcement day. You must show work experience (at least 3,000 hours accumulated before February 2026 for most eligible countries) and leadership experience from employment or civil-society engagement — the annual call is currently closed.",
+      "source_url": "https://si.se/en/apply/scholarships/swedish-institute-scholarships-for-global-professionals/",
+      "details_url": null
+    },
+    {
+      "id": "master-mind-scholarship",
+      "name": "Master Mind Scholarship",
+      "provider": "Flemish Ministry of Education and Training (Study in Flanders)",
+      "country": "BE",
+      "degree_levels": ["masters"],
+      "funding_type": "partial",
+      "amount_text": "A grant of €10,225 plus a tuition fee waiver per academic year — one academic year for a master's of 60 ECTS or two academic years for a master's of 120 ECTS. The tuition rate charged to holders equals the lowest local rate (€136.50 for 2026-2027).",
+      "deadline": null,
+      "eligibility": "Outstanding students from around the world doing a master's programme at a Flemish or Brussels institution; each Flemish institution may submit a maximum of 20 applications, so candidates apply through the host institution. The call for 2026-2027 is closed, and the Ministry has the grant, selection process and modalities under review, so they may change for 2027-2028.",
+      "source_url": "https://www.studyinflanders.be/scholarships/master-mind-scholarships",
+      "details_url": null
+    },
+    {
+      "id": "heinrich-boell-foundation-scholarship",
+      "name": "Heinrich Böll Foundation Scholarship",
+      "provider": "Heinrich Böll Stiftung, funded by the Federal Ministry of Research, Technology and Space (BMFTR) and the Federal Foreign Office (AA)",
+      "country": "DE",
+      "degree_levels": ["masters", "phd"],
+      "funding_type": "partial",
+      "amount_text": "For master's students funded by the Federal Foreign Office: a base scholarship of €992 per month plus a health insurance allowance of up to €100, with optional components such as tuition reimbursement of up to €10,000 per year. PhD candidates receive a base scholarship of €1,500 per month plus up to €200 for health insurance.",
+      "deadline": "2027-03-01",
+      "eligibility": "International students who completed their first degree abroad and are about to start a master's degree in Germany, and international PhD students who completed their graduate degree abroad, may apply; priority goes to applicants from DAC countries who have not yet taken up residence in Germany. The next application windows are 15 January to 1 March 2027 (the portal closes 1 March 2027) and 15 July to 1 September 2027.",
+      "source_url": "https://www.boell.de/en/scholarships",
+      "details_url": "https://www.boell.de/en/2025/05/14/financial-support"
+    },
+    {
+      "id": "stipendium-hungaricum",
+      "name": "Stipendium Hungaricum Scholarship",
+      "provider": "Hungarian Government",
+      "country": "HU",
+      "degree_levels": ["bachelors", "masters", "phd"],
+      "funding_type": "full",
+      "amount_text": "All tuition fees are covered and accommodation costs are supported for the duration of the scholarship, so you can focus on your studies at a Hungarian university.",
+      "deadline": null,
+      "eligibility": "Established by the Hungarian Government to attract top international students from all around the world to Hungarian universities, covering all degree levels and higher-education fields taught in English and other foreign languages. The official site is currently accepting applications for the 2026/27 academic year; the linked call for application carries the closing date.",
+      "source_url": "https://stipendiumhungaricum.hu/",
+      "details_url": null
+    },
+    {
+      "id": "turkiye-scholarships",
+      "name": "Türkiye Scholarships",
+      "provider": "Republic of Türkiye — Türkiye Scholarships programme",
+      "country": "TR",
+      "degree_levels": ["bachelors", "masters", "phd"],
+      "funding_type": "full",
+      "amount_text": "Financial support combined with university placement — the official site describes the award as a comprehensive programme that considers everything international students need during their studies, and it guarantees placement at a Turkish university alongside the funding.",
+      "deadline": null,
+      "eligibility": "International students at associate, bachelor's, master's and PhD levels, as well as researchers, can apply to study at Türkiye's most prestigious universities. Applications are received online through the official application system free of charge, and selection is competitive with a strong emphasis on academic excellence.",
+      "source_url": "https://www.turkiyeburslari.gov.tr/",
+      "details_url": null
+    }
+  ]
+}

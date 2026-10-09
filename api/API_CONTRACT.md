@@ -452,6 +452,44 @@ File endpoints:
 - `GET .../file` answers with the stored media type and `Content-Disposition`;
   a document with no file is `404 NOT_FOUND`.
 
+## Applications (W12 — tracker)
+GET `/applications` — optional `?status=` filter
+POST `/applications`
+PATCH `/applications/{application_id}`
+DELETE `/applications/{application_id}`
+
+`POST` body: `{university, program_name?, status, url?, notes?, submitted_at?,
+decision_at?}` — `university` (blank rejected) and `status` are required;
+`status` must be one of `draft | submitted | interview | offer | rejected |
+waitlist | withdrawn`. Returns the row: `{id, university, program_name,
+status, url, notes, submitted_at, decision_at, created_at, updated_at}`
+(timestamps ISO-8601; nullable fields may be `null`).
+`GET` → `{items: [...]}` (the caller's rows, newest first). An unknown
+`?status=` is `422 VALIDATION_ERROR`, never a silently empty list that reads
+like "no offers" for a typo'd filter.
+`PATCH` applies only the fields sent (an explicit `null` clears a nullable
+column; an absent field is untouched) and returns the full row. `DELETE` →
+`{id, deleted: true}`; deleting twice is `404`.
+Rows are student-scoped: a foreign application id is `404 NOT_FOUND` on read
+**and** mutate (404-not-403, cross-user probing stays blind).
+
+## Scholarships (W13 — verified reference data)
+GET `/scholarships` — query: `page` (≥1, default 1), `page_size` (1–100,
+default 20), `q` (case-insensitive substring over name / provider /
+eligibility), `country` (2-letter ISO), `degree_level` (`bachelors |
+masters | phd`), `funding_type` (`full | partial | merit | need-based`).
+
+Pure reference data: no session, no profile, no database — a verified JSON
+dataset of real scholarships served from `backend/app/data/scholarships.json`.
+Envelope is identical to `GET /programs`: `{items, page, page_size, total,
+next_cursor}`. Every item carries `{id, name, provider, country,
+degree_levels, funding_type, amount_text, deadline, eligibility, source_url,
+details_url?, last_checked}` with a real `source_url` fetched on
+`last_checked`; `country: null` marks multi-country schemes (Erasmus Mundus)
+which deliberately match no `country` filter. Unrecognised filter values
+match nothing (same behaviour as `degree_level` on `/programs`); a `null`
+deadline means the provider publishes no single date.
+
 ## Notifications
 GET `/notifications` → `{"items": [...], "unread_count": <int>}` (newest first, capped at 50)
 POST `/notifications/{notification_id}/read` → `{"read": true}`

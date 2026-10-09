@@ -766,3 +766,58 @@ class Document(Base):
     file_name: Mapped[str | None] = mapped_column(Text)
     file_size: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = _ts()
+
+
+class ApplicationStatus(enum.StrEnum):
+    """Application tracker lifecycle (W12).
+
+    Values are lower-case because the API contract pins them
+    (draft|submitted|interview|offer|rejected|waitlist|withdrawn) and the
+    /applications page echoes them straight back into its status selects.
+    """
+
+    DRAFT = "draft"
+    SUBMITTED = "submitted"
+    INTERVIEW = "interview"
+    OFFER = "offer"
+    REJECTED = "rejected"
+    WAITLIST = "waitlist"
+    WITHDRAWN = "withdrawn"
+
+
+class Application(Base):
+    """One application a student is tracking (W12 application tracker).
+
+    Scoped by ``user_id`` rather than ``profile_id``: the tracker is a
+    per-account list of real submissions, and every route must answer 404
+    (never 403) for a row owned by somebody else, so cross-user probing
+    stays blind — the same rule documents/monitor follow.
+    """
+
+    __tablename__ = "applications"
+    __table_args__ = (Index("idx_applications_user_status", "user_id", "status"),)
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    university: Mapped[str] = mapped_column(Text)
+    program_name: Mapped[str | None] = mapped_column(Text)
+    # values_callable: SQLAlchemy persists enum MEMBER NAMES by default
+    # (DRAFT), but the contract — and the application_status type created by
+    # the migration — pin the lower-case values. Every other enum in this
+    # file has name == value, which is why they never needed this.
+    status: Mapped[ApplicationStatus] = mapped_column(
+        Enum(
+            ApplicationStatus,
+            name="application_status",
+            create_type=False,
+            values_callable=lambda members: [member.value for member in members],
+        ),
+        server_default="draft",
+    )
+    # Free-form student notes / the application portal link — always exactly
+    # what the student typed, never inferred.
+    url: Mapped[str | None] = mapped_column(Text)
+    notes: Mapped[str | None] = mapped_column(Text)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decision_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _ts()
+    updated_at: Mapped[datetime] = _ts()  # kept current by the applications_updated_at trigger

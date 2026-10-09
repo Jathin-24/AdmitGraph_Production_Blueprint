@@ -4,8 +4,8 @@ Status legend: **✅ implemented** — tests exist today; **🟡 partial** — c
 in a weaker form than the plan imagined (noted inline); **⛔ not implemented** —
 no code, no test.
 
-Verification date: 2026-10. Backend: **580 tests passing, 91 % line coverage of
-`backend/app`** (`pytest -q --cov=app --cov-report=term-missing`). Frontend: **30
+Verification date: 2026-10. Backend: **614 tests passing, 91 % line coverage of
+`backend/app`** (`pytest -q --cov=app --cov-report=term-missing`). Frontend: **74
 tests** (`cd frontend && npm test`, Vitest + Testing Library). CI runs ruff,
 mypy, the full backend suite, a frontend source scan, the OpenAPI/path contract
 checks and staleness diffs for every derived artefact.
@@ -129,6 +129,8 @@ Expected: snapshot and material-change alert. **✅** — `test_monitoring.py`,
 - authorization prevents cross-user profile access — `test_api_shapes.py`,
   `test_strategy_api.py`, `test_evidence.py` (404-not-403 scoping for runs,
   strategies, subscriptions, documents, notifications, evidence),
+  `test_applications_api.py` (foreign row 404 on PATCH **and** DELETE, absent
+  from the other user's list, owner's row unchanged after both attempts),
   `test_session_hardening.py` (TOKEN_STALE).
 
 Not in the original plan but added: security-header assertions, JWT
@@ -152,6 +154,26 @@ metrics (`test_metrics.py`).
 - **✅** `database/schema.sql` freshness — CI regenerates it from a
   freshly-migrated database and diffs (`test_export_schema.py` locally).
 
+## W12-W15 submission wave (2026-10-09)
+
+- **✅ Application tracker** — `backend/tests/test_applications_api.py`
+  (10: round-trip CRUD, partial patch semantics, `?status=` filtering, 422 on
+  unknown status / blank university / unknown filter, cross-user 404 on read
+  and mutate, delete-then-delete 404) + `frontend/app/lib/applications-api.test.ts`
+  (8: status grouping order, counts, label mapping, list URL).
+- **✅ Scholarship finder** — `backend/tests/test_scholarships.py` (23, no DB:
+  dataset integrity — every row has a real `source_url` and `last_checked` —
+  plus filter/pagination/envelope behaviour) +
+  `frontend/app/lib/scholarships-api.test.ts` (14: query/URL helpers, deadline
+  and snippet formatting).
+- **✅ Visa & funding checklist** — `frontend/app/visa/visa.test.ts` (21:
+  localStorage key/round-trip/corrupt-storage, completion math, country-data
+  integrity — official-host allowlist, figure-implies-source, ISO last-checked).
+- **✅ Wider catalog** — `integration/test_demo_db.py` (fixture replay +
+  idempotency + `test_demo_fixture_catalog_is_multi_country_and_officially_sourced`:
+  10–14 programs, ≥3 countries, every URL-carrying program backed by an
+  `OFFICIAL_UNIVERSITY` source), pins in `tests/test_demo.py` (9 / 11 / 348 / 82).
+
 ## Frontend test plan (P2-24, implemented)
 
 Runner: Vitest + jsdom + Testing Library (`cd frontend && npm test`).
@@ -168,6 +190,9 @@ Runner: Vitest + jsdom + Testing Library (`cd frontend && npm test`).
 - `app/source-scan.test.ts` — no bare `fetch(` outside `lib/api.ts` /
   `lib/api-extra.ts` in client code, no credential-shaped literals.
 - `app/lib/api-contract.test.ts` — spec ↔ generated types ↔ client endpoints.
+- `app/lib/applications-api.test.ts` — tracker grouping/counts/URL helpers.
+- `app/lib/scholarships-api.test.ts` — scholarship query/URL/format helpers.
+- `app/visa/visa.test.ts` — visa checklist persistence + dataset integrity.
 
 Not covered (documented gaps): no browser/E2E suite (Playwright/Cypress), no
 visual regression tests, no accessibility audit beyond the ARIA assertions in

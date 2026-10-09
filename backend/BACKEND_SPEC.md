@@ -34,7 +34,7 @@ backend/
     workers/                  # locks.py, recovery.py, scheduler.py (in-process)
   scripts/                    # seed_demo, export_schema, export_openapi,
                               # grant_demo_admin, capture_example, fix_fit_explanations
-  tests/                      # 580 tests (pytest); scratch DB `admitgraph_test`
+  tests/                      # 614 tests (pytest); scratch DB `admitgraph_test`
   var/                        # gitignored runtime state (file outbox, uploads)
 
 ## Layering
@@ -159,7 +159,7 @@ neutralized, delimited and declared untrusted in the system message).
 - structured logs with request_id and run_id
 
 ## Tests
-Status: implemented — **580 tests, 91 % coverage of `backend/app`**; the
+Status: implemented — **614 tests, 91 % coverage of `backend/app`**; the
 plan-by-plan status map (including the remaining gap: no browser E2E) lives in
 `../tests/TEST_PLAN.md`.
 

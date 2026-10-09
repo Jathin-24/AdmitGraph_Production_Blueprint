@@ -3,8 +3,8 @@
 -- followed by pg_dump --schema-only, so this file can never diverge
 -- from the Alembic history (PLAN ground rule 6).
 --
--- Alembic head at export time: 3e58d2140fc9
--- Regenerate: python -m scripts.export_schema --url <scratch-db-url>  (docker exec -e PGPASSWORD=*** deployment-postgres-1 pg_dump -U admitgraph -h localhost -d schema_scratch)
+-- Alembic head at export time: c8f4a1d92b7e
+-- Regenerate: python -m scripts.export_schema --url <scratch-db-url>  (docker exec -e PGPASSWORD=*** deployment-postgres-1 pg_dump -U admitgraph -h localhost -d admitgraph_schema_scratch)
 --
 -- Load into a FRESH database:  psql -f database/schema.sql
 -- The stamp row below leaves alembic at head, so a later
@@ -13,7 +13,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict xs1kk4dWReqbh2lAO1443sEyeIIobTtgnJzRck4GUb7DNPI3gpoKQYZF4H0YuCo
+\restrict rpOtKK10DesSdqZzgilcJiLPh9hRV3pBtO3PVUhEVOCjKQ4y8KzVWI4hrxO5ykf
 
 -- Dumped from database version 16.15 (Debian 16.15-1.pgdg13+2)
 -- Dumped by pg_dump version 16.15 (Debian 16.15-1.pgdg13+2)
@@ -41,6 +41,21 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
 --
 
 COMMENT ON EXTENSION pgcrypto IS 'cryptographic functions';
+
+
+--
+-- Name: application_status; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.application_status AS ENUM (
+    'draft',
+    'submitted',
+    'interview',
+    'offer',
+    'rejected',
+    'waitlist',
+    'withdrawn'
+);
 
 
 --
@@ -214,6 +229,25 @@ CREATE TABLE public.application_plans (
     status text DEFAULT 'PLANNED'::text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     reasons jsonb DEFAULT '[]'::jsonb NOT NULL
+);
+
+
+--
+-- Name: applications; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.applications (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    user_id uuid NOT NULL,
+    university text NOT NULL,
+    program_name text,
+    status public.application_status DEFAULT 'draft'::public.application_status NOT NULL,
+    url text,
+    notes text,
+    submitted_at timestamp with time zone,
+    decision_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -912,6 +946,14 @@ ALTER TABLE ONLY public.application_plans
 
 
 --
+-- Name: applications applications_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.applications
+    ADD CONSTRAINT applications_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: auth_tokens auth_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1312,6 +1354,13 @@ ALTER TABLE ONLY public.users
 
 
 --
+-- Name: idx_applications_user_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_applications_user_status ON public.applications USING btree (user_id, status);
+
+
+--
 -- Name: idx_evidence_retrieved; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1396,6 +1445,13 @@ CREATE INDEX ix_notifications_user_created ON public.notifications USING btree (
 
 
 --
+-- Name: applications applications_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER applications_updated_at BEFORE UPDATE ON public.applications FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
 -- Name: institutions institutions_updated_at; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -1460,6 +1516,14 @@ ALTER TABLE ONLY public.application_plans
 
 ALTER TABLE ONLY public.application_plans
     ADD CONSTRAINT application_plans_strategy_run_id_fkey FOREIGN KEY (strategy_run_id) REFERENCES public.strategy_runs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: applications applications_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.applications
+    ADD CONSTRAINT applications_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 
 
 --
@@ -1890,8 +1954,8 @@ ALTER TABLE ONLY public.test_scores
 -- PostgreSQL database dump complete
 --
 
-\unrestrict xs1kk4dWReqbh2lAO1443sEyeIIobTtgnJzRck4GUb7DNPI3gpoKQYZF4H0YuCo
+\unrestrict rpOtKK10DesSdqZzgilcJiLPh9hRV3pBtO3PVUhEVOCjKQ4y8KzVWI4hrxO5ykf
 
 
--- Alembic version at export time (3e58d2140fc9).
-INSERT INTO public.alembic_version (version_num) VALUES ('3e58d2140fc9');
+-- Alembic version at export time (c8f4a1d92b7e).
+INSERT INTO public.alembic_version (version_num) VALUES ('c8f4a1d92b7e');

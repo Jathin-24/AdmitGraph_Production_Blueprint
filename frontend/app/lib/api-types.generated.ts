@@ -1046,10 +1046,194 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/applications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Applications
+         * @description The signed-in student's applications, optionally narrowed by status.
+         *
+         *     An unknown ``status`` is a 422 VALIDATION_ERROR (FastAPI validates the
+         *     query against the enum) — never a silently empty list that would look
+         *     like "you have no offers" when the caller simply typo'd the filter.
+         */
+        get: operations["list_applications_api_v1_applications_get"];
+        put?: never;
+        /** Create Application */
+        post: operations["create_application_api_v1_applications_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/applications/{application_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Application */
+        delete: operations["delete_application_api_v1_applications__application_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Application */
+        patch: operations["update_application_api_v1_applications__application_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/scholarships": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Scholarships
+         * @description Browse the verified scholarship dataset (PLAN.md W13 contract).
+         *
+         *     Pure reference data — no session, no profile, no database. Every item
+         *     carries a real ``source_url`` and the dataset's ``last_checked`` date so
+         *     the UI can tell a student when the figures were last seen at the source.
+         */
+        get: operations["list_scholarships_api_v1_scholarships_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * ApplicationCreate
+         * @description POST /applications body.
+         *
+         *     ``university`` and ``status`` are required (the contract lists them
+         *     without ``?``); everything else is optional. Whitespace-only
+         *     ``university`` is rejected in the service, not here — see
+         *     ``app.services.applications`` for why normalization stays out of
+         *     validators.
+         */
+        ApplicationCreate: {
+            /** University */
+            university: string;
+            /** Program Name */
+            program_name?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "draft" | "submitted" | "interview" | "offer" | "rejected" | "waitlist" | "withdrawn";
+            /** Url */
+            url?: string | null;
+            /** Notes */
+            notes?: string | null;
+            /** Submitted At */
+            submitted_at?: string | null;
+            /** Decision At */
+            decision_at?: string | null;
+        };
+        /** ApplicationDeletedOut */
+        ApplicationDeletedOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Deleted
+             * @default true
+             */
+            deleted: boolean;
+        };
+        /** ApplicationListOut */
+        ApplicationListOut: {
+            /** Items */
+            items: components["schemas"]["ApplicationOut"][];
+        };
+        /**
+         * ApplicationOut
+         * @description One tracker row as the frontend consumes it (mirrors the model).
+         */
+        ApplicationOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** University */
+            university: string;
+            /** Program Name */
+            program_name: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "draft" | "submitted" | "interview" | "offer" | "rejected" | "waitlist" | "withdrawn";
+            /** Url */
+            url: string | null;
+            /** Notes */
+            notes: string | null;
+            /** Submitted At */
+            submitted_at: string | null;
+            /** Decision At */
+            decision_at: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * ApplicationPatch
+         * @description PATCH /applications/{id} body: only the fields actually sent are
+         *     applied (the router checks ``model_fields_set``, so an explicit null
+         *     clears a nullable column while an absent field is left untouched).
+         */
+        ApplicationPatch: {
+            /** University */
+            university?: string | null;
+            /** Program Name */
+            program_name?: string | null;
+            /** Status */
+            status?: ("draft" | "submitted" | "interview" | "offer" | "rejected" | "waitlist" | "withdrawn") | null;
+            /** Url */
+            url?: string | null;
+            /** Notes */
+            notes?: string | null;
+            /** Submitted At */
+            submitted_at?: string | null;
+            /** Decision At */
+            decision_at?: string | null;
+        };
+        /**
+         * ApplicationStatus
+         * @description Application tracker lifecycle (W12).
+         *
+         *     Values are lower-case because the API contract pins them
+         *     (draft|submitted|interview|offer|rejected|waitlist|withdrawn) and the
+         *     /applications page echoes them straight back into its status selects.
+         * @enum {string}
+         */
+        ApplicationStatus: "draft" | "submitted" | "interview" | "offer" | "rejected" | "waitlist" | "withdrawn";
         /** AuthResponse */
         AuthResponse: {
             /** Token */
@@ -3338,6 +3522,174 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+        };
+    };
+    list_applications_api_v1_applications_get: {
+        parameters: {
+            query?: {
+                status?: components["schemas"]["ApplicationStatus"] | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationListOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_application_api_v1_applications_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApplicationCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_application_api_v1_applications__application_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationDeletedOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_application_api_v1_applications__application_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApplicationPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_scholarships_api_v1_scholarships_get: {
+        parameters: {
+            query?: {
+                page?: number;
+                page_size?: number;
+                q?: string;
+                country?: string | null;
+                degree_level?: string | null;
+                funding_type?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

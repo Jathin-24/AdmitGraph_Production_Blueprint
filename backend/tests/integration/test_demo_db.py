@@ -324,15 +324,27 @@ async def test_demo_endpoint_replays_captured_run_end_to_end(
     assert all("gl" in (q.get("parameters") or {}) for q in discovery_entries)
 
     # The user-facing promise of audit D-2: after a demo run, Explore's
-    # country filter actually returns the replayed programs (the capture is
-    # Germany-localized, so ?country=DE must include every fixture program).
+    # country filter actually returns the replayed programs (the catalog spans
+    # several countries now, so ?country=DE must include every DE fixture
+    # program, and non-DE fixture programs must not leak into the result).
     catalog = (
         await api.get("/api/v1/programs", params={"country": "DE", "page_size": 100})
     ).json()
     listed = {item["name"] for item in catalog["items"]}
-    assert {item.canonical_name for item in fixture.programs} <= listed, (
-        "GET /programs?country=DE must return the demo-replayed programs"
+    de_programs = [
+        item for item in fixture.programs if (item.country_code or "").upper() == "DE"
+    ]
+    assert de_programs, "the fixture must keep at least one German program"
+    assert {item.canonical_name for item in de_programs} <= listed, (
+        "GET /programs?country=DE must return the demo-replayed German programs"
     )
+    de_names = {item.canonical_name for item in de_programs}
+    leaked = {
+        item.canonical_name
+        for item in fixture.programs
+        if (item.country_code or "").upper() != "DE" and item.canonical_name not in de_names
+    }
+    assert not (leaked & listed), "non-DE fixture programs must not leak into ?country=DE"
 
 
 async def test_second_post_returns_the_same_in_flight_run(
@@ -462,6 +474,50 @@ async def test_fixture_upsert_is_idempotent(demo_env: DemoEnv) -> None:
     for row in rows_after_second["programs"]:
         if row.normalized_name in program_countries:
             assert row.country_code == program_countries[row.normalized_name]
+
+
+def test_demo_fixture_catalog_is_multi_country_and_officially_sourced() -> None:
+    """W15: the demo catalog is a 10-14 program, >=3-country catalog in which
+    every URL-carrying program is backed by an official university page with
+    full evidence provenance (source_url, domain, retrieval + freshness)."""
+    fixture = load_fixture()
+
+    assert 10 <= len(fixture.programs) <= 14
+    countries = {(item.country_code or "").strip().upper() for item in fixture.programs}
+    assert "" not in countries, "every fixture program must carry a country code"
+    assert len(countries) >= 3, f"catalog must span at least 3 countries, got {sorted(countries)}"
+    for inst in fixture.institutions:
+        assert (inst.country_code or "").strip(), (
+            f"{inst.canonical_name}: every institution needs a country_code "
+            "(countries FK seeding depends on it)"
+        )
+
+    official_urls = {
+        src.canonical_url
+        for src in fixture.sources
+        if src.source_authority == "OFFICIAL_UNIVERSITY"
+    }
+    evidence_by_program: dict[str, list[Any]] = {}
+    for ev in fixture.evidence:
+        if ev.subject_ref is not None:
+            evidence_by_program.setdefault(ev.subject_ref, []).append(ev)
+
+    for program in fixture.programs:
+        if program.official_url is None:
+            # The two programs captured by the original run predate W15 and
+            # carry no official_url; every W15 program must have one.
+            continue
+        assert program.official_url in official_urls, (
+            f"{program.canonical_name}: official_url must be an OFFICIAL_UNIVERSITY source"
+        )
+        linked = evidence_by_program.get(program.id, [])
+        assert linked, f"{program.canonical_name}: must have at least one evidence row"
+        assert any(ev.source_url == program.official_url for ev in linked), (
+            f"{program.canonical_name}: evidence must cite the official program page"
+        )
+        for ev in linked:
+            assert ev.source_url and ev.source_domain, "evidence needs provenance"
+            assert ev.retrieved_at is not None and ev.freshness_deadline is not None
 
 
 async def test_persona_fills_only_empty_fields_for_participant(demo_env: DemoEnv) -> None:

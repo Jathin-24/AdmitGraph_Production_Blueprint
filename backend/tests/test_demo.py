@@ -41,10 +41,10 @@ def test_captured_fixture_exists_and_holds_the_real_run() -> None:
     # updates these pins together with this assertion.)
     assert fixture.meta.source_run_id == "0bdefbff-117d-4435-b8a6-144fe28ee83d"
     assert "real" in fixture.meta.note.lower()
-    assert len(fixture.institutions) == 2
-    assert len(fixture.programs) == 2
-    assert len(fixture.sources) == 339
-    assert len(fixture.evidence) == 66
+    assert len(fixture.institutions) == 9
+    assert len(fixture.programs) == 11
+    assert len(fixture.sources) == 348
+    assert len(fixture.evidence) == 82
     assert len(fixture.requirements) >= 1
     assert fixture.planned_queries, "captured run must keep its planned queries"
 

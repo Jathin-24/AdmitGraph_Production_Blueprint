@@ -20,6 +20,7 @@ from starlette.types import Message, Receive
 
 from app.api.v1 import (
     admin,
+    applications,
     auth,
     documents,
     evidence,
@@ -30,6 +31,7 @@ from app.api.v1 import (
     profile,
     programs,
     research,
+    scholarships,
     strategies,
 )
 from app.core import metrics
@@ -496,3 +498,5 @@ app.include_router(programs.router, prefix="/api/v1")
 app.include_router(admin.router, prefix="/api/v1")
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(notifications.router, prefix="/api/v1")
+app.include_router(applications.router, prefix="/api/v1")
+app.include_router(scholarships.router, prefix="/api/v1")
