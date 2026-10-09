@@ -49,7 +49,7 @@ jobs:
       # The suite includes the frontend source scan (tests/test_frontend_secrets.py)
       # and the path-extraction contract test (tests/test_contract.py); coverage is
       # REPORTED only — no threshold is enforced yet (W6).
-      - name: pytest (580 tests, coverage reported)
+      - name: pytest (614 tests, coverage reported)
         run: pytest -q --cov=app --cov-report=term-missing
         working-directory: backend
       # Named step so a secrets/contract regression is obvious in the checks UI

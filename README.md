@@ -162,9 +162,9 @@ discovery searches per run, concurrency-limited with a circuit breaker, and
 bounded by a daily search budget counted from `search_runs`
 (`AGRAPH_DAILY_SEARCH_BUDGET`, default 500/day → `429 BUDGET_EXCEEDED`).
 
-Live usage in this repository as of 2026-10-09: **18 successful live research
-runs and 189 ledgered SerpApi searches** across `google`/`google_jobs`/
-`google_news` (169 rows carry provider search ids) — inspect live totals at
+Live usage in this repository as of 2026-10-09: **19 successful live research
+runs and 213 ledgered SerpApi searches** across `google`/`google_jobs`/
+`google_news` (185 rows carry provider search ids) — inspect live totals at
 `/admin/search-usage` and `/admin/research-runs` (ADMIN-gated). Demo mode
 replays a captured real SerpApi session (`POST /research/demo`), labeled as a
 replay, so anyone can run the full flow with zero credits.
