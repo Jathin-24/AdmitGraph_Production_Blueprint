@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import AppError
 from app.db.models import (
     ConfidenceLevel,
+    Country,
     Evidence,
     EvidenceStatus,
     Institution,
@@ -35,6 +36,7 @@ from app.db.models import (
     Source,
     SourceAuthority,
 )
+from app.services.research.planner import COUNTRY_NAMES
 
 FIXTURE_PATH = Path(__file__).resolve().parents[3] / "scripts" / "demo" / "example.json"
 
@@ -490,6 +492,29 @@ def _missing_ref(kind: str, ref: str) -> AppError:
 
 async def apply_fixture(session: AsyncSession, fixture: DemoFixture) -> dict[str, Any]:
     """Idempotently upsert every fixture row; returns replay counts for step output."""
+    # Country reference rows first (FK): the capture localized its discovery
+    # to Germany and the captured institutions/programs sit there, so the
+    # fixture carries ISO codes — but `countries` ships empty, and applying
+    # programs with country_code on a fresh database would violate the FK.
+    # Names come from the planner's static ISO map (factual, never guessed);
+    # an unmappable code is skipped and the column stays NULL instead.
+    wanted_codes: list[FixtureInstitution | FixtureProgram] = [
+        *fixture.institutions,
+        *fixture.programs,
+    ]
+    wanted = {
+        item.country_code.strip().upper()
+        for item in wanted_codes
+        if item.country_code and item.country_code.strip()
+    }
+    for code in sorted(wanted):
+        name = COUNTRY_NAMES.get(code)
+        if name is None:
+            continue
+        if await session.get(Country, code) is None:
+            session.add(Country(code=code, name=name))
+    await session.flush()
+
     created = {
         "institutions": 0,
         "programs": 0,

@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import create_token
 from app.db.models import (
     ApplicationPlan,
+    Country,
     Evidence,
     Experience,
     FitAssessment,
@@ -302,6 +303,37 @@ async def test_demo_endpoint_replays_captured_run_end_to_end(
     ).scalars().all()
     assert len(requirements) >= len(fixture.requirements)
 
+    # Demo plans serialize exactly like the live runner (as_dict) — checked on
+    # the stored plan row, since the run API intentionally flattens the list
+    # to query strings for display. Template, budget and per-query parameters
+    # (discovery `gl`) all survive.
+    plan_row = (
+        await demo_env.session.execute(select(ResearchPlan).where(ResearchPlan.id == plan_id))
+    ).scalars().one()
+    stored = plan_row.planned_queries
+    assert stored and set(stored[0]) == {
+        "engine",
+        "q",
+        "purpose",
+        "template",
+        "parameters",
+        "budget",
+    }
+    discovery_entries = [q for q in stored if q.get("purpose") == "discovery"]
+    assert discovery_entries, "demo planner must emit discovery queries"
+    assert all("gl" in (q.get("parameters") or {}) for q in discovery_entries)
+
+    # The user-facing promise of audit D-2: after a demo run, Explore's
+    # country filter actually returns the replayed programs (the capture is
+    # Germany-localized, so ?country=DE must include every fixture program).
+    catalog = (
+        await api.get("/api/v1/programs", params={"country": "DE", "page_size": 100})
+    ).json()
+    listed = {item["name"] for item in catalog["items"]}
+    assert {item.canonical_name for item in fixture.programs} <= listed, (
+        "GET /programs?country=DE must return the demo-replayed programs"
+    )
+
 
 async def test_second_post_returns_the_same_in_flight_run(
     demo_env: DemoEnv, api: AsyncClient, monkeypatch: pytest.MonkeyPatch
@@ -413,6 +445,23 @@ async def test_fixture_upsert_is_idempotent(demo_env: DemoEnv) -> None:
     assert fixture_evidence_ids <= {row.id for row in rows_after_second["evidence"]}
     fixture_program_names = {item.normalized_name for item in fixture.programs}
     assert fixture_program_names <= {row.normalized_name for row in rows_after_second["programs"]}
+
+    # Country filter columns (audit D-2): replayed rows carry the capture's
+    # ISO codes and the FK reference row was seeded (`countries` ships empty,
+    # so an unseeded DE would violate programs/institutions country FKs).
+    country_codes = {row.code for row in (await session.execute(select(Country))).scalars()}
+    expected_codes = {
+        item.country_code.strip().upper()
+        for item in (*fixture.institutions, *fixture.programs)
+        if item.country_code
+    }
+    assert expected_codes <= country_codes, "fixture country codes must be reference rows"
+    program_countries = {
+        item.normalized_name: item.country_code for item in fixture.programs if item.country_code
+    }
+    for row in rows_after_second["programs"]:
+        if row.normalized_name in program_countries:
+            assert row.country_code == program_countries[row.normalized_name]
 
 
 async def test_persona_fills_only_empty_fields_for_participant(demo_env: DemoEnv) -> None:

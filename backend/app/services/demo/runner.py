@@ -240,9 +240,10 @@ async def _execute_step(
         goal = plan.requested_goal if isinstance(plan.requested_goal, dict) else {}
         year = int(goal.get("intake_year", datetime.now(UTC).year + 1))
         queries = plan_queries(profile, prefs_dict, year)
-        plan.planned_queries = [
-            {"engine": q.engine, "q": q.q, "purpose": q.purpose} for q in queries
-        ]
+        # Canonical serialization (same as the live runner): keeps template,
+        # budget and per-query `parameters` (e.g. discovery `gl`) so a demo
+        # run's stored plan reads exactly like a live one.
+        plan.planned_queries = [q.as_dict() for q in queries]
         await session.commit()
         return {"queries": [q.q for q in queries], "demo": True}
 
